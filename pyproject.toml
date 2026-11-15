@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nopt"
+version = "0.1.0.dev0"
+description = "Nicks Opinionated (Python Package) Publishing Tool"
+requires-python = ">=3.11.4"
+authors = [{name = "Nicholas Hairs"}]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENCE"]
+dependencies = ["build>=1.2.2", "packaging>=24", "setuptools>=80", "uv>=0.8"]
+
+[project.scripts]
+nopt = "nopt.cli:main"
+
+[project.urls]
+GitHub = "https://github.com/nhairs/nicks-opinionated-python-package-publishing-tool"
+
+[dependency-groups]
+dev = ["pytest>=8", "black", "pylint", "pyrefly", "validate-pyproject[all]", "tox>=4", "tox-uv"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nopt = ["workflow.yml"]
+
+[tool.black]
+line-length = 100
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.messages_control]
+disable = ["too-few-public-methods", "too-many-arguments", "too-many-positional-arguments"]
+
+[tool.nopt]

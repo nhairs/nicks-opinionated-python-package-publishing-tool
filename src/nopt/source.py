@@ -79,6 +79,7 @@ def source_paths(root: Path) -> set[str]:
 
 def snapshot(root: Path) -> dict[str, str]:
     """Fingerprint working inputs to detect source mutation across a build."""
+    root = root.resolve()
     result = {}
     for name in sorted(source_paths(root)):
         path = root / name
@@ -93,6 +94,7 @@ def snapshot(root: Path) -> dict[str, str]:
 
 def copy_working(root: Path, destination: Path, with_git: bool = False) -> None:
     """Copy working sources including ignored data, excluding disposable tool caches."""
+    root = root.resolve()
     destination.mkdir(parents=True, exist_ok=True)
     for name in source_paths(root):
         path = root / name
@@ -115,6 +117,7 @@ def manifest(root: Path) -> set[str]:
     Install the project's declared build dependencies in an isolated environment.
     Custom hook failures abort rather than approximating their selection.
     """
+    root = root.resolve()
     with tempfile.TemporaryDirectory() as temporary:
         egg_base = Path(temporary)
         from build import ProjectBuilder  # pylint: disable=import-outside-toplevel

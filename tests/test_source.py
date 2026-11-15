@@ -2,11 +2,12 @@
 
 from dataclasses import replace
 import subprocess
+import os
 
 import pytest
 
 from nopt.config import load
-from nopt.source import Context, identity
+from nopt.source import Context, copy_working, identity, manifest
 from conftest import inventory
 
 
@@ -97,3 +98,14 @@ def test_git_worktree_and_stale_manifest(project, tmp_path):
     before = inventory(worktree)
     assert not identity(worktree, load(worktree), Context(True))["dirty"]
     assert inventory(worktree) == before
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows hosted runners cannot create directory symlinks"
+)
+def test_manifest_resolves_aliased_temp_root(project, tmp_path):
+    staged = tmp_path / "real-stage"
+    copy_working(project, staged)
+    alias = tmp_path / "stage-alias"
+    alias.symlink_to(staged, target_is_directory=True)
+    assert "src/fixture_package/__init__.py" in manifest(alias)

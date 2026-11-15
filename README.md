@@ -97,7 +97,7 @@ The bundle contains `dist/` (wheel + sdist), optional `notes.md`, `release.json`
 nopt workflow-template --output .github/workflows/release.yml
 ```
 
-The command refuses to overwrite an existing file. Without `--output`, it prints the template. Replace the failing `<your CI goes here>` placeholder with your CI. The template uses tag triggers, full checkout history, separate jobs and 90-day artifact retention. Edit the template directly; generation has no persistent TOML options.
+The command refuses to overwrite an existing file. Without `--output`, it prints the template. Replace the failing `<your CI goes here>` placeholder with your CI. The template uses tag triggers, full checkout history, separate jobs and 90-day artifact retention. The build job records the immutable artifact ID; downstream jobs download that exact ID rather than resolving an artifact name again. Edit the template directly; generation has no persistent TOML options.
 
 Before enabling publication:
 

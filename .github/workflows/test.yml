@@ -13,7 +13,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
       - name: Lint with tox
         run: uvx tox -e lint
-      - uses: docker://rhysd/actionlint:1.7.7
+      - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: .github/workflows/test.yml src/nopt/workflow.yml
   tests:

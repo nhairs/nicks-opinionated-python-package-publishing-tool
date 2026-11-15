@@ -8,7 +8,7 @@ import pytest
 
 from nopt.config import load
 from nopt.source import Context, copy_working, identity, manifest
-from conftest import inventory
+from tests.helpers import inventory
 
 
 def test_detached_tag_and_dirty_selection(project):

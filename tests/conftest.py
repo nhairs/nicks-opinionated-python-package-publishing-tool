@@ -1,6 +1,5 @@
 """Real local source repositories for behavioral tests."""
 
-from pathlib import Path
 import subprocess
 
 import pytest
@@ -50,12 +49,3 @@ fixture_package = ["data.txt", "py.typed"]
     ]:
         subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
     return root
-
-
-def inventory(root: Path):
-    """Include ignored/untracked files; exclude only Git internals."""
-    return {
-        p.relative_to(root).as_posix(): p.read_bytes()
-        for p in root.rglob("*")
-        if p.is_file() and ".git" not in p.relative_to(root).parts
-    }

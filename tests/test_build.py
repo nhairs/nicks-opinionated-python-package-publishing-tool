@@ -14,7 +14,7 @@ from nopt.changelog import release_notes
 from nopt.config import load
 from nopt.source import Context, copy_working, identity
 from nopt.cli import check_bundle_context, main
-from conftest import inventory
+from tests.helpers import inventory
 
 
 @pytest.mark.parametrize("suffix", [False, True])

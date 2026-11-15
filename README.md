@@ -119,7 +119,7 @@ Manifest enumeration is deliberately conservative and may be expensive. Unsuppor
 ```sh
 uv sync --group dev
 uvx tox -e lint
-uv run pytest
+uvx tox
 ```
 
-CI runs tests on Linux, macOS and Windows with Python 3.11–3.15. Integration tests use real local Git repositories and isolated wheel/sdist builds. Optional companion integration uses `NOPT_COMPANION_SOURCE=/path/to/setuptools-git-metadata uv run pytest tests/test_build.py::test_build_with_delivered_metadata_plugin`. No tests perform package publication, create GitHub releases or change remote settings.
+CI runs tox with tox-uv on Linux, macOS and Windows for CPython 3.11–3.15 and PyPy 3.11–3.12. Integration tests use real local Git repositories and isolated wheel/sdist builds. Optional companion integration uses `NOPT_COMPANION_SOURCE=/path/to/setuptools-git-metadata uvx tox -e companion`. No tests perform package publication, create GitHub releases or change remote settings.

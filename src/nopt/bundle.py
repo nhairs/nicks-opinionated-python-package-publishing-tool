@@ -115,7 +115,11 @@ def make_bundle(
     with tempfile.TemporaryDirectory() as temporary:
         bundle = Path(temporary) / "bundle"
         project_file = root / "pyproject.toml"
-        original = project_file.read_bytes() if config.testpypi_username else None
+        original = (
+            project_file.read_bytes()
+            if config.repository == "testpypi" and config.distribution != config.name
+            else None
+        )
         distributions = bundle / "dist"
         try:
             if original is not None:
@@ -138,7 +142,12 @@ def make_bundle(
             if original is not None:
                 project_file.write_bytes(original)
         ### Validate artifacts and bind them to the original project configuration.
-        hashes = validate_artifacts(distributions, config.distribution, config.version)
+        hashes = {
+            "dist/" + name: digest
+            for name, digest in validate_artifacts(
+                distributions, config.distribution, config.version
+            ).items()
+        }
         if notes is not None:
             (bundle / "notes.md").write_text(notes, encoding="utf-8")
             hashes["notes.md"] = sha256(bundle / "notes.md")
@@ -148,10 +157,7 @@ def make_bundle(
             "source": source,
             "distribution": config.distribution,
             "context": cast(ContextData, asdict(context)),
-            "files": {
-                ("dist/" + name if name.endswith((".whl", ".tar.gz")) else name): digest
-                for name, digest in hashes.items()
-            },
+            "files": hashes,
         }
         (bundle / "release.json").write_text(
             json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"

@@ -11,13 +11,12 @@ import subprocess
 import sys
 import tarfile
 import zipfile
-from urllib.parse import quote
 from urllib.error import URLError
 
 from .bundle import make_bundle, read_bundle, validate_output
 from .changelog import release_notes
 from .config import Config, load
-from .remote import Client
+from .remote import GitHubClient, PyPIClient
 from .source import Context, SourceIdentity, identity
 
 
@@ -46,9 +45,10 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument(
                 "--local", action="store_true", help="use local refs/inputs rather than GHA context"
             )
-        command.add_argument(
-            "--tag", help="existing v-prefixed tag pointing to HEAD; inferred from version locally"
-        )
+        if name != "publish-github-release":
+            command.add_argument(
+                "--tag", help="local-only existing tag pointing to HEAD; inferred from version"
+            )
         if name in {"build", "publish-github-release"}:
             command.add_argument(
                 "--check-only",
@@ -119,8 +119,8 @@ def context(args: argparse.Namespace) -> Context:
     if not ref.startswith("refs/tags/"):
         raise ValueError("release workflow must run from an existing tag")
     tag = ref.removeprefix("refs/tags/")
-    if args.tag is not None and args.tag != tag:
-        raise ValueError("explicit tag disagrees with GITHUB_REF")
+    if getattr(args, "tag", None) is not None:
+        raise ValueError("--tag is local-only; GHA reads GITHUB_REF")
     run_id, attempt = os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", "")
     if not run_id.isdigit() or not attempt.isdigit():
         raise ValueError("GHA run identity is required")
@@ -144,18 +144,18 @@ def overrides(args: argparse.Namespace) -> dict[str, object]:
 
 
 def check_source(
-    root: Path, config: Config, execution: Context, client: Client
+    root: Path, config: Config, execution: Context, index: PyPIClient, github: GitHubClient
 ) -> tuple[SourceIdentity, str | None]:
     """Refuse an existing index version before tag/GitHub diagnostics."""
-    client.absent(config.repository, config.distribution, config.version)
+    index.absent(config.repository, config.distribution, config.version)
     source = identity(root, config, execution)
     notes = release_notes(root, config)
     if not execution.local:
         if os.environ.get("GITHUB_SHA") != source["commit"]:
             raise ValueError("HEAD disagrees with GITHUB_SHA")
-        client.check_tag(source["tag"], source["commit"])
+        github.check_tag(source["tag"], source["commit"])
         if config.github_requested:
-            client.release_absent(source["tag"])
+            github.release_absent(source["tag"])
     return source, notes
 
 
@@ -175,7 +175,7 @@ def check_bundle_context(data: Mapping[str, object], execution: Context) -> None
 
 
 def publish_github(
-    args: argparse.Namespace, execution: Context, client: Client
+    args: argparse.Namespace, execution: Context, index: PyPIClient, github: GitHubClient
 ) -> dict[str, str | int | bool]:
     """Gate announcement on exact index bytes; existing releases always fail."""
     ### Validate the original bundle and workflow identity before network checks.
@@ -187,19 +187,19 @@ def publish_github(
         "GITHUB_SHA"
     ):
         raise ValueError("bundle source disagrees with workflow identity")
-    client.check_tag(data["source"]["tag"], data["source"]["commit"])
-    client.release_absent(data["source"]["tag"])
+    github.check_tag(data["source"]["tag"], data["source"]["commit"])
+    github.release_absent(data["source"]["tag"])
     expected = {
         name.removeprefix("dist/"): digest
         for name, digest in data["files"].items()
         if name.startswith("dist/")
     }
     ### Gate GitHub publication on exact index filenames and hashes.
-    client.verify_index(config.repository, config.distribution, config.version, expected)
+    index.verify_index(config.repository, config.distribution, config.version, expected)
     # Recheck tag and existence after bounded metadata waiting.
-    client.check_tag(data["source"]["tag"], data["source"]["commit"])
-    client.release_absent(data["source"]["tag"])
-    latest = client.is_latest_final(config.version)
+    github.check_tag(data["source"]["tag"], data["source"]["commit"])
+    github.release_absent(data["source"]["tag"])
+    latest = github.is_latest_final(config.version)
     if args.check_only:
         return {"checked": "publish-github-release", "latest": latest}
     notes = (
@@ -208,7 +208,7 @@ def publish_github(
         else ""
     )
     ### Create the release once; existing-release recovery remains deferred.
-    release = client.github(
+    release = github.github(
         "releases",
         "POST",
         {
@@ -232,21 +232,7 @@ def publish_github(
     ### Attach only the verified original files.
     assets = [p for p in args.bundle.rglob("*") if p.is_file()]
     for path in sorted(assets):
-        url = (
-            f"https://uploads.github.com/repos/{execution.github_repository}"
-            f"/releases/{release_id}/assets?name={quote(path.name, safe='')}"
-        )
-        result = client.request(
-            url,
-            "POST",
-            path.read_bytes(),
-            github=True,
-            content_type="application/octet-stream",
-        )
-        if not isinstance(result, dict) or result.get("state") != "uploaded":
-            raise ValueError(
-                f"GitHub asset upload did not complete: {path.name}; recovery is deferred"
-            )
+        github.upload_asset(release_id, path)
     return {"github_release": release_url, "assets": len(assets)}
 
 
@@ -262,12 +248,12 @@ def execute(args: argparse.Namespace) -> dict[str, str | int | bool]:
         print(content, end="")
         return {}
     execution = context(args)
-    client = Client(execution.github_repository)
+    github = GitHubClient(execution.github_repository)
     if args.command == "publish-github-release":
-        return publish_github(args, execution, client)
+        return publish_github(args, execution, PyPIClient(), github)
     root = args.project.resolve()
     config = load(root, overrides(args))
-    source, notes = check_source(root, config, execution, client)
+    source, notes = check_source(root, config, execution, PyPIClient(), github)
     result: dict[str, str | int | bool] = {
         "version": config.version,
         "distribution": config.distribution,

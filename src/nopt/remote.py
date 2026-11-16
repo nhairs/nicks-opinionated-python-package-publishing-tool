@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 import json
 import os
+from pathlib import Path
 import time
 from urllib.error import HTTPError
 from urllib.parse import quote
@@ -24,55 +25,71 @@ def decode_response(raw: bytes) -> object:
     return decoded
 
 
-class Client:
-    """Read public index metadata and interact with one authenticated repository."""
+def request(
+    url: str,
+    method: str = "GET",
+    data: bytes | None = None,
+    github: bool = False,
+    content_type: str = "application/json",
+) -> object:
+    """Perform one request; only HTTP 404 is treated as absence."""
+    headers = {"User-Agent": "nopt/0.1", "Accept": "application/json"}
+    if github:
+        token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if not token:
+            raise ValueError("GitHub API access requires GH_TOKEN or GITHUB_TOKEN")
+        headers["Authorization"] = f"Bearer {token}"
+        headers["X-GitHub-Api-Version"] = "2022-11-28"
+    if data is not None:
+        headers["Content-Type"] = content_type
+    try:
+        with urlopen(
+            Request(url, data=data, headers=headers, method=method), timeout=30
+        ) as response:
+            raw = response.read()
+            return decode_response(raw)
+    except HTTPError as error:
+        if error.code == 404:
+            return None
+        # Do not expose response bodies or authenticated request headers.
+        raise ValueError(f"HTTP {error.code} from {url.split('?')[0]}") from None
 
-    def __init__(self, repository: str | None = None) -> None:
-        """Bind authenticated operations to one repository."""
-        self.repository = repository
-        return
 
-    @staticmethod
-    def request(
-        url: str,
-        method: str = "GET",
-        data: bytes | None = None,
-        github: bool = False,
-        content_type: str = "application/json",
-    ) -> object:
-        """Perform one request; only HTTP 404 is treated as absence."""
-        headers = {"User-Agent": "nopt/0.1", "Accept": "application/json"}
-        if github:
-            token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-            if not token:
-                raise ValueError("GitHub API access requires GH_TOKEN or GITHUB_TOKEN")
-            headers["Authorization"] = f"Bearer {token}"
-            headers["X-GitHub-Api-Version"] = "2022-11-28"
-        if data is not None:
-            headers["Content-Type"] = content_type
-        try:
-            with urlopen(
-                Request(url, data=data, headers=headers, method=method), timeout=30
-            ) as response:
-                raw = response.read()
-                return decode_response(raw)
-        except HTTPError as error:
-            if error.code == 404:
-                return None
-            # Do not expose response bodies or authenticated request headers.
-            raise ValueError(f"HTTP {error.code} from {url.split('?')[0]}") from None
+class PyPIClient:
+    """Read public package-index records without GitHub credentials."""
 
     def index(self, target: str, name: str, version: str) -> object:
         """Look up exactly the target version on the chosen index."""
         host = "pypi.org" if target == "pypi" else "test.pypi.org"
-        return self.request(
-            f"https://{host}/pypi/{quote(name, safe='')}/{quote(version, safe='')}/json"
-        )
+        return request(f"https://{host}/pypi/{quote(name, safe='')}/{quote(version, safe='')}/json")
 
     def absent(self, target: str, name: str, version: str) -> None:
         """Any record, even empty or yanked, prevents a new upload."""
         if self.index(target, name, version) is not None:
             raise ValueError(f"{target} already has a record for {name} {version}")
+        return
+
+    def verify_index(
+        self, target: str, name: str, version: str, expected: dict[str, str], timeout: float = 300
+    ) -> None:
+        """Wait only for missing/partial matching metadata; fail promptly on conflicts."""
+        deadline = time.monotonic() + timeout
+        while True:
+            if publication_matches(self.index(target, name, version), expected):
+                return
+            if time.monotonic() >= deadline:
+                raise ValueError(
+                    f"timed out waiting for {target} filenames/hashes: expected {expected}"
+                )
+            time.sleep(min(5, max(0, deadline - time.monotonic())))
+
+
+class GitHubClient:
+    """Interact with one authenticated GitHub repository."""
+
+    def __init__(self, repository: str | None) -> None:
+        """Bind authenticated operations to one repository."""
+        self.repository = repository
         return
 
     def github(
@@ -81,12 +98,30 @@ class Client:
         """Use a fixed API host and validated owner/repository identity."""
         if self.repository is None:
             raise ValueError("GitHub repository identity is required")
-        return self.request(
+        return request(
             f"https://api.github.com/repos/{self.repository}/{path}",
             method,
             None if data is None else json.dumps(data).encode(),
             github=True,
         )
+
+    def upload_asset(self, release_id: int, path: Path) -> None:
+        """Attach one original bundle file and require a completed upload."""
+        if self.repository is None:
+            raise ValueError("GitHub repository identity is required")
+        result = request(
+            f"https://uploads.github.com/repos/{self.repository}"
+            f"/releases/{release_id}/assets?name={quote(path.name, safe='')}",
+            "POST",
+            path.read_bytes(),
+            github=True,
+            content_type="application/octet-stream",
+        )
+        if not isinstance(result, dict) or result.get("state") != "uploaded":
+            raise ValueError(
+                f"GitHub asset upload did not complete: {path.name}; recovery is deferred"
+            )
+        return
 
     def check_tag(self, tag: str, commit: str) -> None:
         """Resolve the live remote tag, including annotated tags, through commits API."""
@@ -118,20 +153,6 @@ class Client:
         if self.github(f"releases/tags/{quote(tag, safe='')}") is not None:
             raise ValueError("GitHub release already exists; automatic recovery is not implemented")
         return
-
-    def verify_index(
-        self, target: str, name: str, version: str, expected: dict[str, str], timeout: float = 300
-    ) -> None:
-        """Wait only for missing/partial matching metadata; fail promptly on conflicts."""
-        deadline = time.monotonic() + timeout
-        while True:
-            if publication_matches(self.index(target, name, version), expected):
-                return
-            if time.monotonic() >= deadline:
-                raise ValueError(
-                    f"timed out waiting for {target} filenames/hashes: expected {expected}"
-                )
-            time.sleep(min(5, max(0, deadline - time.monotonic())))
 
 
 def publication_matches(data: object, expected: Mapping[str, str]) -> bool:

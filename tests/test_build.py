@@ -12,13 +12,15 @@ from nopt.bundle import make_bundle, read_bundle, sha256, validate_artifacts
 from nopt.changelog import release_notes
 from nopt.config import load
 from nopt.source import Context, identity
-from nopt.cli import check_bundle_context, main
+from nopt.cli import check_bundle_context, context, main, parser
 
 
 @pytest.mark.parametrize("backend", ["setuptools", "hatchling"])
-@pytest.mark.parametrize("suffix", [False, True])
+@pytest.mark.parametrize(
+    "suffix,target", [(False, "pypi"), (False, "testpypi"), (True, "testpypi")]
+)
 def test_checkout_build_and_bundle(
-    project: Path, tmp_path: Path, suffix: bool, backend: str
+    project: Path, tmp_path: Path, suffix: bool, target: str, backend: str
 ) -> None:
     """Build in the checkout and resolve publishing identity from original configuration."""
     ### Configure the real backend and effective index-facing name.
@@ -31,7 +33,7 @@ def test_checkout_build_and_bundle(
         )
         text += '\n[tool.hatch.build.targets.wheel]\npackages = ["src/fixture_package"]\n'
         path.write_text(text, encoding="utf-8")
-    config = load(project)
+    config = replace(load(project), repository=target)
     if suffix:
         config = replace(config, repository="testpypi", testpypi_username="alice")
     context = Context(True)
@@ -246,4 +248,29 @@ def build_sdist(sdist_directory: str, config_settings: dict[str, object] | None 
     assert observed["name"] == "fixture-package-alice"
     assert path.read_bytes() == original
     assert not destination.exists()
+    return
+
+
+@pytest.mark.parametrize("explicit_tag", [None, "v1.2.3.dev4", "v9.9.9"])
+def test_gha_tag_comes_only_from_environment(
+    monkeypatch: pytest.MonkeyPatch, explicit_tag: str | None
+) -> None:
+    """Use GITHUB_REF in GHA and reject even matching explicit local-only tags."""
+    for key, value in {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_REPOSITORY": "owner/repo",
+        "GITHUB_REF": "refs/tags/v1.2.3.dev4",
+        "GITHUB_RUN_ID": "123",
+        "GITHUB_RUN_ATTEMPT": "1",
+    }.items():
+        monkeypatch.setenv(key, value)
+    arguments = ["ci-preflight"]
+    if explicit_tag is not None:
+        arguments.extend(["--tag", explicit_tag])
+    args = parser().parse_args(arguments)
+    if explicit_tag is None:
+        assert context(args).tag == "v1.2.3.dev4"
+    else:
+        with pytest.raises(ValueError, match="local-only"):
+            context(args)
     return

@@ -115,7 +115,7 @@ def test_unreleased_pre_and_dev(project: Path, version: str) -> None:
 
 def test_changelog_rules(project: Path) -> None:
     """Reject invalid dates, duplicate sections and sections containing only headings."""
-    config = load(project)
+    config = replace(load(project), version="1.2.3")
     path = project / "docs" / "changelog.md"
     with pytest.raises(ValueError, match="date"):
         release_notes(project, replace(config, version="1.2.3"))
@@ -170,4 +170,14 @@ def test_index_partial_complete_conflicting() -> None:
     ]:
         with pytest.raises(ValueError):
             publication_matches({"urls": files}, expected)
+    return
+
+
+@pytest.mark.parametrize("version", ["1.2.3.dev1", "1.2.3a1", "1.2.3b1", "1.2.3rc1"])
+def test_nonfinal_requires_unreleased(project: Path, version: str) -> None:
+    """Reject dated changelog sections for all nonfinal release types."""
+    path = project / "docs" / "changelog.md"
+    path.write_text("## [1.2.3] - 2026-11-15\n\n- Change\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="UNRELEASED"):
+        release_notes(project, replace(load(project), version=version))
     return

@@ -26,13 +26,12 @@ def release_notes(root: Path, config: Config) -> str | None:
         raise ValueError(f"expected exactly one changelog section for {base}")
     heading, _, content = matches[0].partition("\n")
     stamp = heading.rsplit(" - ", 1)[-1]
-    if stamp == "UNRELEASED":
-        if config.group == "final":
-            raise ValueError("final releases require a changelog date")
-    else:
+    if config.group == "final":
         if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", stamp):
-            raise ValueError("expected YYYY-MM-DD or UNRELEASED changelog date")
+            raise ValueError("final releases require a YYYY-MM-DD changelog date")
         date.fromisoformat(stamp)
+    elif stamp != "UNRELEASED":
+        raise ValueError("dev/pre releases require an UNRELEASED changelog section")
     if not any(line.strip() and not line.startswith("#") for line in content.splitlines()):
         raise ValueError("changelog section requires nonempty content")
     return matches[0].rstrip() + "\n"

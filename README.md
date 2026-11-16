@@ -56,7 +56,7 @@ Use a base-version section, shared by dev/pre/final releases:
 - Describe the changes.
 ```
 
-Exactly one matching level-two section is required and the complete section is used as release notes. Its body must contain a nonblank line that does not start with `#`. Dev/pre may use `UNRELEASED`; final releases require a real `YYYY-MM-DD` date. Nopt never changes dates. `changelog = false` or `--no-changelog` disables all changelog policy.
+Exactly one matching level-two section is required and the complete section is used as release notes. Its body must contain a nonblank line that does not start with `#`. Dev/pre require `UNRELEASED`; final releases require a real `YYYY-MM-DD` date. Nopt never changes dates. `changelog = false` or `--no-changelog` disables all changelog policy.
 
 ## Command flow
 
@@ -87,7 +87,7 @@ nopt build --local --output /absolute/path/to/new-bundle
 nopt publish-release-preflight --local --bundle /absolute/path/to/new-bundle
 ```
 
-Local mode derives project/version/commit from the checkout and the expected tag from the version. `--project PATH` selects another checkout; `--tag` must identify the same existing canonical tag pointing to HEAD. Local mode checks local branches without fetching. GHA checks fetched repository branches and requires matching `GITHUB_REF`, `GITHUB_SHA`, repository, run ID and attempt. A local bundle is not accepted for GHA publishing. Local GitHub release publishing is not supported.
+Local mode derives project/version/commit from the checkout and the expected tag from the version. `--project PATH` selects another checkout; `--tag` is local-only and must identify the same existing canonical tag pointing to HEAD. Local mode checks local branches without fetching. GHA checks fetched repository branches and requires matching `GITHUB_REF`, `GITHUB_SHA`, repository, run ID and attempt. A local bundle is not accepted for GHA publishing. Local GitHub release publishing is not supported.
 
 Builds run directly from the checkout with the project's configured backend. Build-dependency isolation and the frontend's default sdist-then-wheel behavior remain enabled. Backend-generated files such as build/ or egg-info should be ignored by the client project's Git rules. Nopt neither copies the source tree nor excludes directories itself.
 
@@ -97,7 +97,7 @@ Static project.name is still required, but alternate valid TOML spellings such a
 
 Output must be a new directory; if it is inside the checkout, it must be Git-ignored. Add release-bundle/ to .gitignore to use the default output path.
 
-The bundle contains `dist/` (wheel + sdist), optional `notes.md`, `release.json` and standard `SHA256SUMS`. Release identity binds original hashes, resolved policy, source commit/tag and pre-build dirty status, and GHA run identity when available. SHA256SUMS includes release.json; the GitHub artifact/run identity supplies the workflow trust boundary. Checksums alone are not signatures. The package does not inspect generated runtime `_version.py` or require setuptools-git-metadata.
+The bundle contains `dist/` (wheel + sdist), optional `notes.md`, `release.json` and standard `SHA256SUMS`. `notes.md` holds the extracted changelog section used as the GitHub release body, so publication uses the same checked text as the build. Manifest hash keys are relative to the bundle root. Release identity binds original hashes, resolved policy, source commit/tag and pre-build dirty status, and GHA run identity when available. SHA256SUMS includes release.json; the GitHub artifact/run identity supplies the workflow trust boundary. Checksums alone are not signatures. The package does not inspect generated runtime `_version.py` or require setuptools-git-metadata.
 
 ### Generate a workflow
 

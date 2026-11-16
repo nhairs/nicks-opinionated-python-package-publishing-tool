@@ -15,6 +15,16 @@ _VERSION_PATTERN = re.compile(
 )
 
 
+def parse_version(value: object) -> Version:
+    """Parse only the canonical version forms accepted by nopt release policy."""
+    if not isinstance(value, str) or not _VERSION_PATTERN.fullmatch(value):
+        raise ValueError("version must be canonical X.Y.Z with at most one .devN/aN/bN/rcN suffix")
+    parsed = Version(value)
+    if str(parsed) != value:
+        raise ValueError("version must use canonical spelling")
+    return parsed
+
+
 @dataclass(frozen=True)
 class Config:  # pylint: disable=too-many-instance-attributes
     """Resolved project identity and release policy."""
@@ -76,10 +86,7 @@ def validate(config: Config) -> Config:  # pylint: disable=too-many-branches
         r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", config.name
     ):
         raise ValueError("project.name must be a distribution name")
-    if not isinstance(config.version, str) or not _VERSION_PATTERN.fullmatch(config.version):
-        raise ValueError("version must be canonical X.Y.Z with at most one .devN/aN/bN/rcN suffix")
-    if str(Version(config.version)) != config.version:
-        raise ValueError("version must use canonical spelling")
+    parse_version(config.version)
     if config.changelog is not False and (
         not isinstance(config.changelog, str) or not config.changelog
     ):

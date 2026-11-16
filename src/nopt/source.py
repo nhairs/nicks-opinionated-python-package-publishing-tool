@@ -1,11 +1,12 @@
 """Read release identity and Git working-tree status."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 from typing import TypedDict
 
-from .config import Config
+from .config import Config, parse_version
 
 
 class SourceIdentity(TypedDict):
@@ -87,3 +88,23 @@ def identity(root: Path, config: Config, context: Context) -> SourceIdentity:
     if dirty and config.group not in config.allow_dirty:
         raise ValueError(f"working tree is dirty; {config.group} is not in allow-dirty")
     return {"commit": commit, "tag": tag, "dirty": dirty}
+
+
+def is_latest_final(version: str, refs: Iterable[str]) -> bool:
+    """Compare canonical final-version tag refs without package-index or release-date data."""
+    current = parse_version(version)
+    if current.is_devrelease or current.is_prerelease:
+        return False
+    finals = []
+    for ref in refs:
+        if not ref.startswith("refs/tags/v"):
+            continue
+        try:
+            candidate = parse_version(ref.removeprefix("refs/tags/v"))
+        except ValueError:
+            continue
+        if not candidate.is_devrelease and not candidate.is_prerelease:
+            finals.append(candidate)
+    if current not in finals:
+        raise ValueError("current final release tag is missing from Git tag refs")
+    return current == max(finals)

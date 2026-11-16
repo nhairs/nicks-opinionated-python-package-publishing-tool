@@ -114,22 +114,29 @@ def make_bundle(
     destination = validate_output(root, destination)
     with tempfile.TemporaryDirectory() as temporary:
         bundle = Path(temporary) / "bundle"
-        if config.testpypi_username:
-            # Eligibility is checked against the original name before this uncommitted edit.
-            rename_distribution(root / "pyproject.toml", config.distribution)
+        project_file = root / "pyproject.toml"
+        original = project_file.read_bytes() if config.testpypi_username else None
         distributions = bundle / "dist"
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "build",
-                "--installer=uv",
-                "--outdir",
-                str(distributions),
-                str(root),
-            ],
-            check=True,
-        )
+        try:
+            if original is not None:
+                # Eligibility is checked before the temporary name/formatting changes.
+                rename_distribution(project_file, config.distribution)
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "build",
+                    "--installer=uv",
+                    "--outdir",
+                    str(distributions),
+                    str(root),
+                ],
+                check=True,
+            )
+        finally:
+            # Restore original comments, formatting and pre-existing uncommitted edits.
+            if original is not None:
+                project_file.write_bytes(original)
         ### Validate artifacts and bind them to the original project configuration.
         hashes = validate_artifacts(distributions, config.distribution, config.version)
         if notes is not None:

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from dataclasses import replace
+import tomllib
 import pytest
 
 from nopt.changelog import release_notes
@@ -134,14 +135,22 @@ def test_changelog_rules(project: Path) -> None:
     return
 
 
-def test_testpypi_rename_preserves_other_content(project: Path) -> None:
-    """Rewrite only the declared project name for a TestPyPI build."""
-    path = project / "pyproject.toml"
-    before = path.read_text(encoding="utf-8")
-    rename_distribution(path, "fixture-package-alice")
-    assert path.read_text(encoding="utf-8") == before.replace(
-        'name = "fixture-package"', 'name = "fixture-package-alice"'
-    )
+@pytest.mark.parametrize(
+    "source",
+    [
+        '[project]\nname = "example" # comment\nversion = "1.2.3"\n',
+        '["project"]\n"name" = \'example\'\nversion = "1.2.3"\n',
+        'project.name = "example"\nproject.version = "1.2.3"\n',
+    ],
+)
+def test_testpypi_rename_preserves_values(tmp_path: Path, source: str) -> None:
+    """Change the static name for different TOML spellings without changing other values."""
+    path = tmp_path / "pyproject.toml"
+    path.write_bytes(source.encode("utf-8"))
+    expected = tomllib.loads(source)
+    expected["project"]["name"] = "example-alice"
+    rename_distribution(path, "example-alice")
+    assert tomllib.loads(path.read_text(encoding="utf-8")) == expected
     return
 
 
@@ -161,17 +170,4 @@ def test_index_partial_complete_conflicting() -> None:
     ]:
         with pytest.raises(ValueError):
             publication_matches({"urls": files}, expected)
-    return
-
-
-@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
-def test_rename_preserves_line_endings(project: Path, newline: bytes) -> None:
-    """Keep source line endings while changing the project name assignment."""
-    path = project / "pyproject.toml"
-    original = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", newline)
-    path.write_bytes(original)
-    rename_distribution(path, "fixture-package-alice")
-    assert path.read_bytes() == original.replace(
-        b'name = "fixture-package"', b'name = "fixture-package-alice"'
-    )
     return

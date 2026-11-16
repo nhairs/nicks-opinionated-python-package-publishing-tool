@@ -9,6 +9,10 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 
+from .config import parse_version
+from .source import is_latest_final
+
+
 def decode_response(raw: bytes) -> object:
     """Decode a successful JSON response without confusing empty/null with HTTP 404."""
     try:
@@ -90,6 +94,24 @@ class Client:
         if not isinstance(data, dict) or data.get("sha") != commit:
             raise ValueError(f"GitHub tag {tag} is missing or no longer points to {commit}")
         return
+
+    def is_latest_final(self, version: str) -> bool:
+        """Read Git tag refs and identify the highest canonical final release."""
+        parsed = parse_version(version)
+        if parsed.is_devrelease or parsed.is_prerelease:
+            return False
+        data = self.github("git/matching-refs/tags/")
+        if not isinstance(data, list):
+            raise ValueError("GitHub tag references must be an array")
+        refs: list[str] = []
+        for item in data:
+            if not isinstance(item, dict):
+                raise ValueError("malformed GitHub tag reference")
+            ref = item.get("ref")
+            if not isinstance(ref, str) or not ref.startswith("refs/tags/"):
+                raise ValueError("malformed GitHub tag reference name")
+            refs.append(ref)
+        return is_latest_final(version, refs)
 
     def release_absent(self, tag: str) -> None:
         """Fail on an existing release; recovery is deliberately deferred."""

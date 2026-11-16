@@ -1,32 +1,21 @@
-"""Update a checkout project name for a TestPyPI build."""
+"""Update the distribution name for a temporary TestPyPI build."""
 
 from pathlib import Path
-import re
 import tomllib
+
+import tomli_w
 
 
 def rename_distribution(path: Path, name: str) -> None:
-    """Replace a conventional static project.name assignment, or fail closed."""
-    text = path.read_bytes().decode("utf-8")
-    # Refuse unusual TOML representations instead of guessing at their semantics.
-    sections = list(re.finditer(r"(?m)^\[project\][ \t]*(?:#[^\r\n]*)?\r?$", text))
-    if len(sections) != 1:
-        raise ValueError("TestPyPI renaming requires a conventional [project] table")
-    start = sections[0].end()
-    next_table = re.search(r"(?m)^\[", text[start:])
-    end = len(text) if next_table is None else start + next_table.start()
-    table = text[start:end]
-    pattern = r"""(?m)^(name[ \t]*=[ \t]*)(?:"[^"\r\n]*"|'[^'\r\n]*')([ \t]*(?:#[^\r\n]*)?\r?)$"""
-
-    def replacement(match: re.Match[str]) -> str:
-        """Replace only the name string, retaining its assignment and trailing content."""
-        return match[1] + '"' + name + '"' + match[2]
-
-    table, count = re.subn(pattern, replacement, table)
-    if count != 1:
-        raise ValueError("TestPyPI renaming requires one simple project.name string assignment")
-    result = text[:start] + table + text[end:]
-    if tomllib.loads(result)["project"]["name"] != name:
+    """Serialize a static project.name change without preserving temporary formatting."""
+    document = tomllib.loads(path.read_bytes().decode("utf-8"))
+    project = document.get("project")
+    if not isinstance(project, dict) or not isinstance(project.get("name"), str):
+        raise ValueError("TestPyPI renaming requires a static project.name string")
+    project["name"] = name
+    encoded = tomli_w.dumps(document).encode("utf-8")
+    # Check the serialized value before changing the working file.
+    if tomllib.loads(encoded.decode("utf-8"))["project"]["name"] != name:
         raise ValueError("build name mismatch")
-    path.write_bytes(result.encode("utf-8"))
+    path.write_bytes(encoded)
     return

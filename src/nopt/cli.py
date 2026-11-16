@@ -176,7 +176,7 @@ def check_bundle_context(data: Mapping[str, object], execution: Context) -> None
 
 def publish_github(
     args: argparse.Namespace, execution: Context, client: Client
-) -> dict[str, str | int]:
+) -> dict[str, str | int | bool]:
     """Gate announcement on exact index bytes; existing releases always fail."""
     ### Validate the original bundle and workflow identity before network checks.
     data, config = read_bundle(args.bundle)
@@ -199,8 +199,9 @@ def publish_github(
     # Recheck tag and existence after bounded metadata waiting.
     client.check_tag(data["source"]["tag"], data["source"]["commit"])
     client.release_absent(data["source"]["tag"])
+    latest = client.is_latest_final(config.version)
     if args.check_only:
-        return {"checked": "publish-github-release"}
+        return {"checked": "publish-github-release", "latest": latest}
     notes = (
         (args.bundle / "notes.md").read_text(encoding="utf-8")
         if config.changelog is not False
@@ -217,7 +218,7 @@ def publish_github(
             "body": notes,
             "draft": False,
             "prerelease": config.group != "final",
-            "make_latest": "true" if config.group == "final" else "false",
+            "make_latest": "true" if latest else "false",
         },
     )
     if not isinstance(release, dict):

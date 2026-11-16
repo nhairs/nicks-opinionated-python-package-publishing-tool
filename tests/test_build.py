@@ -36,18 +36,14 @@ def test_checkout_build_and_bundle(
         config = replace(config, repository="testpypi", testpypi_username="alice")
     context = Context(True)
     source = identity(project, config, context)
-    ### Build from the checked checkout and verify only the requested name edit.
-    original_pyproject = (project / "pyproject.toml").read_text(encoding="utf-8")
+    ### Build from the checked checkout and verify exact restoration.
+    original_bytes = (project / "pyproject.toml").read_bytes()
+    original_pyproject = original_bytes.decode("utf-8")
     destination = tmp_path / "bundle"
     data = make_bundle(
         project, destination, config, context, source, release_notes(project, config)
     )
-    current_pyproject = (project / "pyproject.toml").read_text(encoding="utf-8")
-    assert current_pyproject == (
-        original_pyproject.replace('name = "fixture-package"', 'name = "fixture-package-alice"')
-        if suffix
-        else original_pyproject
-    )
+    assert (project / "pyproject.toml").read_bytes() == original_bytes
     # Ordinary setuptools build outputs are created in the actual checkout.
     if backend == "setuptools":
         assert (
@@ -196,4 +192,58 @@ def test_bundle_rejects_malformed_metadata(
     ### The invalid structure must fail at the metadata boundary.
     with pytest.raises(ValueError):
         read_bundle(bundle)
+    return
+
+
+@pytest.mark.parametrize("local", [True, False])
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+def test_failed_renamed_build_restores_original(
+    project: Path, tmp_path: Path, local: bool, newline: bytes
+) -> None:
+    """Restore exact pre-existing edits after a real backend observes the renamed name and fails."""
+    ### Configure a backend that records the name before raising from its build hook.
+    backend = '''"""Intentional failure fixture for temporary-name cleanup."""
+from pathlib import Path
+from typing import NoReturn
+import json
+import tomllib
+
+
+def build_sdist(sdist_directory: str, config_settings: dict[str, object] | None = None) -> NoReturn:
+    """Record build-time configuration then fail without producing a distribution."""
+    document = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    Path("observed-name.json").write_text(json.dumps({"name": document["project"]["name"]}), encoding="utf-8")
+    raise RuntimeError("intentional backend failure")
+'''
+    (project / "failure_backend.py").write_text(backend, encoding="utf-8")
+    path = project / "pyproject.toml"
+    text = (
+        path.read_text(encoding="utf-8")
+        .replace('requires = ["setuptools>=80"]', 'requires = []\nbackend-path = ["."]')
+        .replace('build-backend = "setuptools.build_meta"', 'build-backend = "failure_backend"')
+    )
+    original = (
+        ("# Preserve this uncommitted comment\n" + text + "\n# Keep my local changes\n")
+        .encode("utf-8")
+        .replace(b"\n", newline)
+    )
+    path.write_bytes(original)
+    config = replace(load(project), repository="testpypi", testpypi_username="alice")
+    context = Context(local)
+    destination = tmp_path / "failed-bundle"
+    ### The original bytes must be restored even though the real build process fails.
+    with pytest.raises(subprocess.CalledProcessError):
+        make_bundle(
+            project,
+            destination,
+            config,
+            context,
+            identity(project, config, context),
+            release_notes(project, config),
+        )
+    observed: object = json.loads((project / "observed-name.json").read_text(encoding="utf-8"))
+    assert isinstance(observed, dict)
+    assert observed["name"] == "fixture-package-alice"
+    assert path.read_bytes() == original
+    assert not destination.exists()
     return

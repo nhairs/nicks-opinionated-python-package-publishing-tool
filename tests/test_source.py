@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 from nopt.config import load
-from nopt.source import Context, identity
+from nopt.source import Context, identity, is_latest_final
 from tests.helpers import inventory
 
 
@@ -123,4 +123,45 @@ def test_worktree_respects_gitignore_without_directory_guesses(
     (worktree / "dist").mkdir()
     (worktree / "dist" / "file.whl").write_text("not ignored", encoding="utf-8")
     assert identity(worktree, load(worktree), Context(True))["dirty"]
+    return
+
+
+@pytest.mark.parametrize("version", ["1.2.3.dev1", "1.2.3a1", "1.2.3b1", "1.2.3rc1"])
+def test_nonfinal_is_never_latest(version: str) -> None:
+    """Exclude development and prerelease versions from GitHub latest marking."""
+    assert is_latest_final(version, []) is False
+    return
+
+
+def test_latest_final_uses_git_versions_not_dates_or_names(project: Path) -> None:
+    """Select the greatest canonical final Git tag, including annotated tags and maintenance versions."""
+    tags = [
+        "v1.2.3",
+        "v1.10.0",
+        "v1.9.0",
+        "v2.0.0rc1",
+        "v2.0.0.dev1",
+        "v1.11.0.post1",
+        "v01.20.0",
+        "v1.2",
+        "unrelated",
+    ]
+    for tag in tags:
+        subprocess.run(["git", "tag", tag], cwd=project, check=True)
+    subprocess.run(
+        ["git", "tag", "-a", "v1.10.1", "-m", "Annotated final"], cwd=project, check=True
+    )
+    refs = subprocess.check_output(
+        ["git", "for-each-ref", "--format=%(refname)", "refs/tags/"], cwd=project, text=True
+    ).splitlines()
+    assert is_latest_final("1.10.1", refs) is True
+    assert is_latest_final("1.10.0", refs) is False
+    assert is_latest_final("1.2.3", refs) is False
+    return
+
+
+def test_latest_requires_current_final_tag() -> None:
+    """Fail closed when a current final release is absent from the Git reference snapshot."""
+    with pytest.raises(ValueError, match="missing"):
+        is_latest_final("1.2.3", ["refs/tags/v1.2.2"])
     return

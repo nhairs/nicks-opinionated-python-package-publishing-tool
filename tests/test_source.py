@@ -1,21 +1,19 @@
-"""Real Git refs and real manifest-based dirty selection."""
+"""Real Git refs and working-tree status checks."""
 
 from dataclasses import replace
 import subprocess
-import os
 
 import pytest
 
 from nopt.config import load
-from nopt.source import Context, copy_working, identity, manifest
+from nopt.source import Context, identity
 from tests.helpers import inventory
 
 
-def test_detached_tag_and_dirty_selection(project):
+def test_detached_tag_and_dirty_status(project):
     subprocess.run(["git", "checkout", "--detach"], cwd=project, check=True, capture_output=True)
     config = load(project)
     (project / "ignored.txt").write_text("ignored", encoding="utf-8")
-    (project / "excluded.txt").write_text("excluded changed", encoding="utf-8")
     before = inventory(project)
     source = identity(project, config, Context(True))
     assert not source["dirty"]
@@ -27,7 +25,7 @@ def test_detached_tag_and_dirty_selection(project):
         identity(project, replace(config, allow_dirty=()), Context(True))
 
 
-def test_untracked_selected_and_deleted(project):
+def test_untracked_changes(project):
     config = load(project)
     (project / "src" / "fixture_package" / "new.py").write_text("VALUE = 1\n", encoding="utf-8")
     assert identity(project, config, Context(True))["dirty"]
@@ -72,18 +70,29 @@ def test_any_allowed_branch_can_satisfy_policy(project):
     assert identity(project, config, Context(True))["dirty"] is False
 
 
-def test_dirty_changes_are_bound_to_bundle_identity(project):
+def test_root_changes_count_even_when_not_packaged(project):
     config = load(project)
-    path = project / "src" / "fixture_package" / "__init__.py"
-    path.write_text('VALUE = "first"\n', encoding="utf-8")
-    first = identity(project, config, Context(True))
-    path.write_text('VALUE = "second"\n', encoding="utf-8")
-    second = identity(project, config, Context(True))
-    assert first["dirty"] is second["dirty"] is True
-    assert first["inputs_sha256"] != second["inputs_sha256"]
+    (project / "excluded.txt").write_text("changed", encoding="utf-8")
+    with pytest.raises(ValueError, match="dirty"):
+        identity(project, replace(config, allow_dirty=()), Context(True))
 
 
-def test_git_worktree_and_stale_manifest(project, tmp_path):
+@pytest.mark.parametrize("change", ["staged", "untracked", "deleted", "renamed"])
+def test_git_status_changes(project, change):
+    path = project / "excluded.txt"
+    if change == "deleted":
+        path.unlink()
+    elif change == "renamed":
+        subprocess.run(["git", "mv", "excluded.txt", "renamed.txt"], cwd=project, check=True)
+    elif change == "untracked":
+        (project / "untracked.txt").write_text("new", encoding="utf-8")
+    else:
+        path.write_text("staged", encoding="utf-8")
+        subprocess.run(["git", "add", "excluded.txt"], cwd=project, check=True)
+    assert identity(project, load(project), Context(True))["dirty"]
+
+
+def test_worktree_respects_gitignore_without_directory_guesses(project, tmp_path):
     worktree = tmp_path / "linked-worktree"
     subprocess.run(
         ["git", "worktree", "add", "--detach", str(worktree), "HEAD"],
@@ -91,21 +100,8 @@ def test_git_worktree_and_stale_manifest(project, tmp_path):
         check=True,
         capture_output=True,
     )
-    cache = worktree / "src" / "fixture_package.egg-info"
-    cache.mkdir()
-    (cache / "SOURCES.txt").write_text("excluded.txt\n", encoding="utf-8")
-    (worktree / "excluded.txt").write_text("changed but excluded", encoding="utf-8")
-    before = inventory(worktree)
+    (worktree / "ignored.txt").write_text("ignored", encoding="utf-8")
     assert not identity(worktree, load(worktree), Context(True))["dirty"]
-    assert inventory(worktree) == before
-
-
-@pytest.mark.skipif(
-    os.name == "nt", reason="Windows hosted runners cannot create directory symlinks"
-)
-def test_manifest_resolves_aliased_temp_root(project, tmp_path):
-    staged = tmp_path / "real-stage"
-    copy_working(project, staged)
-    alias = tmp_path / "stage-alias"
-    alias.symlink_to(staged, target_is_directory=True)
-    assert "src/fixture_package/__init__.py" in manifest(alias)
+    (worktree / "dist").mkdir()
+    (worktree / "dist" / "file.whl").write_text("not ignored", encoding="utf-8")
+    assert identity(worktree, load(worktree), Context(True))["dirty"]

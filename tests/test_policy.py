@@ -7,7 +7,7 @@ from nopt.changelog import release_notes
 from nopt.cli import overrides, parser
 from nopt.config import Config, load, validate
 from nopt.remote import publication_matches
-from nopt.staging import rename_distribution
+from nopt.project import rename_distribution
 
 
 @pytest.mark.parametrize(
@@ -21,7 +21,7 @@ from nopt.staging import rename_distribution
     ],
 )
 def test_versions(version, group):
-    config = validate(Config("fixture", version, "setuptools.build_meta"))
+    config = validate(Config("fixture", version))
     assert config.group == group
 
 
@@ -45,7 +45,7 @@ def test_versions(version, group):
 )
 def test_rejected_versions(version):
     with pytest.raises(ValueError):
-        validate(Config("fixture", version, "setuptools.build_meta"))
+        validate(Config("fixture", version))
 
 
 def test_defaults_and_explicit_false(project):
@@ -83,7 +83,7 @@ def test_defaults_and_explicit_false(project):
 )
 def test_bad_configuration(changes):
     with pytest.raises(ValueError):
-        validate(replace(Config("fixture", "1.2.3", "setuptools.build_meta"), **changes))
+        validate(replace(Config("fixture", "1.2.3"), **changes))
 
 
 def test_unknown_settings(project):
@@ -119,7 +119,7 @@ def test_changelog_rules(project):
     assert release_notes(project, replace(config, changelog=False)) is None
 
 
-def test_testpypi_staging_preserves_other_content(project):
+def test_testpypi_rename_preserves_other_content(project):
     path = project / "pyproject.toml"
     before = path.read_text(encoding="utf-8")
     rename_distribution(path, "fixture-package-alice")
@@ -143,3 +143,14 @@ def test_index_partial_complete_conflicting():
     ]:
         with pytest.raises(ValueError):
             publication_matches({"urls": files}, expected)
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+def test_rename_preserves_line_endings(project, newline):
+    path = project / "pyproject.toml"
+    original = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", newline)
+    path.write_bytes(original)
+    rename_distribution(path, "fixture-package-alice")
+    assert path.read_bytes() == original.replace(
+        b'name = "fixture-package"', b'name = "fixture-package-alice"'
+    )

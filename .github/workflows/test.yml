@@ -28,18 +28,3 @@ jobs:
       - uses: astral-sh/setup-uv@v3
       - name: Test with tox
         run: uvx tox
-  companion:
-    needs: lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: nhairs/setuptools-git-metadata
-          ref: fa190370b450943fe45fdec2a9312f8d592f6f1d
-          path: .companion
-      - uses: astral-sh/setup-uv@v3
-      - name: Test companion integration with tox
-        run: uvx tox -e companion
-        env:
-          NOPT_COMPANION_SOURCE: ${{ github.workspace }}/.companion

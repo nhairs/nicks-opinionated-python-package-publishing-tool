@@ -16,7 +16,8 @@ import zipfile
 from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
 
 from .config import Config, validate
-from .source import Context, copy_working, snapshot
+from .source import Context
+from .project import rename_distribution
 
 SCHEMA = 1
 
@@ -90,26 +91,13 @@ def validate_output(root: Path, destination: Path) -> Path:
 def make_bundle(  # pylint: disable=too-many-locals
     root: Path, destination: Path, config: Config, context: Context, source: dict, notes: str | None
 ) -> dict:
-    """Build off-tree and publish a complete local bundle only on success."""
+    """Build from the checkout and prepare a complete local release bundle."""
     destination = validate_output(root, destination)
-    before = snapshot(root)
     with tempfile.TemporaryDirectory() as temporary:
-        stage = Path(temporary) / "source"
         bundle = Path(temporary) / "bundle"
-        copy_working(root, stage, with_git=True)
         if config.testpypi_username:
-            # Change only project.name; preserve all other TOML, including comments.
-            import tomllib  # pylint: disable=import-outside-toplevel
-            from .staging import rename_distribution  # pylint: disable=import-outside-toplevel
-
-            rename_distribution(stage / "pyproject.toml", config.distribution)
-            if (
-                tomllib.loads((stage / "pyproject.toml").read_text(encoding="utf-8"))["project"][
-                    "name"
-                ]
-                != config.distribution
-            ):
-                raise ValueError("failed to stage TestPyPI distribution name")
+            # Eligibility is checked against the original name before this uncommitted edit.
+            rename_distribution(root / "pyproject.toml", config.distribution)
         distributions = bundle / "dist"
         subprocess.run(
             [
@@ -119,7 +107,7 @@ def make_bundle(  # pylint: disable=too-many-locals
                 "--installer=uv",
                 "--outdir",
                 str(distributions),
-                str(stage),
+                str(root),
             ],
             check=True,
         )
@@ -148,8 +136,6 @@ def make_bundle(  # pylint: disable=too-many-locals
             "".join(f"{digest}  {name}\n" for name, digest in sorted(checksums.items())),
             encoding="utf-8",
         )
-        if before != snapshot(root):
-            raise ValueError("source changed while building; discard build and start again")
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(bundle, destination)
     return data
@@ -201,7 +187,6 @@ def read_bundle(root: Path) -> tuple[dict, Config]:  # pylint: disable=too-many-
     config = validate(Config(**data["config"]))
     if (
         not isinstance(data["source"].get("dirty"), bool)
-        or not re.fullmatch(r"[0-9a-f]{64}", str(data["source"].get("inputs_sha256", "")))
         or data.get("distribution") != config.distribution
         or data["source"].get("tag") != "v" + config.version
         or not re.fullmatch(r"[0-9a-f]{40,64}", data["source"].get("commit", ""))

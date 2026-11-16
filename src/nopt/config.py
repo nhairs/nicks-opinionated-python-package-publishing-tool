@@ -20,7 +20,6 @@ class Config:  # pylint: disable=too-many-instance-attributes
 
     name: str
     version: str
-    backend: str
     changelog: str | bool = "docs/changelog.md"
     repository: str = "pypi"
     allow_dirty: tuple[str, ...] = ("dev",)
@@ -60,8 +59,6 @@ def validate(config: Config) -> Config:  # pylint: disable=too-many-branches
         raise ValueError("version must be canonical X.Y.Z with at most one .devN/aN/bN/rcN suffix")
     if str(Version(config.version)) != config.version:
         raise ValueError("version must use canonical spelling")
-    if config.backend != "setuptools.build_meta":
-        raise ValueError("selected-source checking currently supports setuptools.build_meta only")
     if config.changelog is not False and (
         not isinstance(config.changelog, str) or not config.changelog
     ):
@@ -131,14 +128,13 @@ def load(root: Path, overrides: dict | None = None) -> Config:
     table = tool.get("nopt", {})
     if not isinstance(table, dict):
         raise ValueError("tool.nopt must be a TOML table")
-    allowed = {field.name for field in fields(Config)} - {"name", "version", "backend"}
+    allowed = {field.name for field in fields(Config)} - {"name", "version"}
     unknown = {key for key in table if key.replace("-", "_") not in allowed}
     if unknown:
         raise ValueError(f"unknown tool.nopt settings: {', '.join(sorted(unknown))}")
     config = Config(
         project.get("name"),
         project.get("version"),
-        data.get("build-system", {}).get("build-backend"),
         **{
             key.replace("-", "_"): tuple(value) if isinstance(value, list) else value
             for key, value in table.items()

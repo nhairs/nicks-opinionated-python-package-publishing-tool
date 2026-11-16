@@ -2,7 +2,7 @@
 
 `nopt` checks Python release eligibility, builds a verified release bundle and optionally publishes a GitHub release. GitHub Actions handles CI, approvals and artifact storage; the PyPA publishing action uploads distributions to PyPI or TestPyPI.
 
-This initial implementation requires Python 3.11.4+ and a setuptools project at the root of a Git repository. It supports one pure-Python wheel plus one source distribution. There is no PyPI upload command.
+This initial implementation requires Python 3.11.4+ and a Python project in a Git checkout. Any PEP 517 build backend supported by python-build can be used. It supports one pure-Python wheel plus one source distribution. There is no PyPI upload command.
 
 ## Install
 
@@ -42,7 +42,7 @@ Accepted versions are exactly canonical `X.Y.Z`, `X.Y.Z.devN`, `X.Y.ZaN`, `X.Y.Z
 
 A restricted release group requires the commit to be reachable from at least one configured branch; it need not be the latest commit. Names are literal, with no globs. Empty branch lists are invalid. Final releases always require a restriction; pre/dev accept explicit false. A detached checkout is valid.
 
-Dirty status uses the union of fresh setuptools sdist source manifests for the working tree and HEAD under current selection controls. Selected tracked changes/deletions and nonignored untracked files count; excluded root files do not. Default dirty allowance is dev only. This is independent of tag-to-HEAD equality.
+Dirty status comes directly from `git status --porcelain=v1 -z --untracked-files=all`. All tracked changes and nonignored untracked files in the checkout count, even when they are not packaged. Git's ignore rules determine what is ignored; nopt does not guess build/cache directories or inspect backend source manifests. Default dirty allowance is dev only. This is independent of tag-to-HEAD equality.
 
 ### Changelog
 
@@ -64,9 +64,9 @@ Exactly one matching level-two section is required and the complete section is u
 | --- | --- |
 | `nopt ci-preflight` | Reject an existing index version, then check source, tag, branch, dirty policy and changelog |
 | Project CI | Your lint and tests |
-| `nopt build` | Repeat eligibility checks, stage sources, run isolated `python -m build --installer=uv`, validate artifacts and create the bundle |
+| `nopt build` | Repeat eligibility checks, build from the checkout using isolated `python -m build --installer=uv`, validate artifacts and create the bundle |
 | Actions upload / approval / download | Preserve the original bundle and gate publishing |
-| `nopt publish-release-preflight --bundle PATH` | Verify exact bundle bytes, policy, selected source identity, tag and index eligibility |
+| `nopt publish-release-preflight --bundle PATH` | Verify exact bundle bytes, policy, commit/tag and dirty status, and index eligibility |
 | PyPA publishing action | OIDC authentication, attestations and PyPI/TestPyPI upload |
 | `nopt publish-github-release --bundle PATH` | If configured, wait for exact PyPI filenames/hashes, then publish the GitHub release and original assets |
 
@@ -87,9 +87,13 @@ nopt publish-release-preflight --local --bundle /absolute/path/to/new-bundle
 
 Local mode derives project/version/commit from the checkout and the expected tag from the version. `--project PATH` selects another checkout; `--tag` must identify the same existing canonical tag pointing to HEAD. Local mode checks local branches without fetching. GHA checks fetched repository branches and requires matching `GITHUB_REF`, `GITHUB_SHA`, repository, run ID and attempt. A local bundle is not accepted for GHA publishing. Local GitHub release publishing is not supported.
 
-Builds run in disposable staging directories. Optional TestPyPI username suffixing changes only the staged distribution name, preserving import names. Backend selection runs in isolated environments using declared build dependencies. Neither operation rewrites the checkout. Output must be a new directory; if it is inside the checkout, it must be Git-ignored. Add `release-bundle/` to `.gitignore` to use the default output path.
+Builds run directly from the checkout with the project's configured backend. Build-dependency isolation and the frontend's default sdist-then-wheel behavior remain enabled. Backend-generated files such as build/ or egg-info should be ignored by the client project's Git rules. Nopt neither copies the source tree nor excludes directories itself.
 
-The bundle contains `dist/` (wheel + sdist), optional `notes.md`, `release.json` and standard `SHA256SUMS`. Release identity binds original hashes, resolved policy, source commit/tag, a fingerprint of selected inputs, and GHA run identity when available. SHA256SUMS includes release.json; the GitHub artifact/run identity supplies the workflow trust boundary. Checksums alone are not signatures. The package does not inspect generated runtime `_version.py` or require setuptools-git-metadata.
+For optional TestPyPI username suffixing, eligibility checks run first against the original project name. The build then changes project.name in the checkout's pyproject.toml to the derived distribution name, preserving import names. That edit is left uncommitted, including after a failed build. A simple static name assignment in a conventional [project] table is required for this edit. No staging copy is made. Later publishing jobs start from an unchanged checkout and independently derive the same effective name from the original project.name and configured suffix. Restore the local name edit before another nopt command in the same checkout; nopt does not guess whether a name has already been suffixed.
+
+Output must be a new directory; if it is inside the checkout, it must be Git-ignored. Add release-bundle/ to .gitignore to use the default output path.
+
+The bundle contains `dist/` (wheel + sdist), optional `notes.md`, `release.json` and standard `SHA256SUMS`. Release identity binds original hashes, resolved policy, source commit/tag and pre-build dirty status, and GHA run identity when available. SHA256SUMS includes release.json; the GitHub artifact/run identity supplies the workflow trust boundary. Checksums alone are not signatures. The package does not inspect generated runtime `_version.py` or require setuptools-git-metadata.
 
 ### Generate a workflow
 
@@ -112,7 +116,7 @@ Generation does not change settings. Keep distributions passed to the upload act
 
 Existing GitHub releases cause failure. Automatic release/asset reconciliation and partial PyPI upload recovery are deferred. If release creation succeeds but an asset upload fails, a retry also fails because the release exists; an owner must review the original evidence and handle recovery manually. Do not rebuild or re-upload a published version. Expired Actions artifacts limit recovery; retain original bytes/evidence separately when needed. The initial template also binds bundles to a run attempt and does not implement failed-job rerun recovery; do not use reruns to attempt another package upload. Same-tag workflow runs are serialized without automatic cancellation.
 
-Manifest enumeration is deliberately conservative and may be expensive. Unsupported backends, monorepo subprojects, source inputs escaping the root and newline filenames fail. Symlinks escaping the checkout fail. Arbitrary custom selection hooks, concurrent changes outside observable source snapshots and cross-platform filename behavior require additional adoption validation. Build hooks run project code; only run nopt on trusted projects. Ignored source data is copied into staging and can be selected by the backend, but ignored untracked files do not set Git dirty status. Disposable tooling/output directories (.venv, venv, .tox, __pycache__, .pytest_cache, build, dist, release-bundle, node_modules and egg-info) are excluded when ignored and are not supported distribution input locations; tracked files are never excluded by that rule. Fresh manifests avoid stale checkout egg-info caches. No production package migrations are included.
+Backend-specific source selection is delegated to the backend through python-build. Nopt does not calculate a source-file fingerprint or promise that backend builds leave the checkout untouched. Build hooks run project code; only run nopt on trusted projects. No production package migrations are included.
 
 ## Develop
 
@@ -122,4 +126,4 @@ uvx tox -e lint
 uvx tox
 ```
 
-CI runs tox with tox-uv on Linux, macOS and Windows for CPython 3.11–3.15 and PyPy 3.11–3.12. Integration tests use real local Git repositories and isolated wheel/sdist builds. Optional companion integration uses `NOPT_COMPANION_SOURCE=/path/to/setuptools-git-metadata uvx tox -e companion`. No tests perform package publication, create GitHub releases or change remote settings.
+CI runs tox with tox-uv on Linux, macOS and Windows for CPython 3.11–3.15 and PyPy 3.11–3.12. Integration tests use real local Git repositories and isolated wheel/sdist builds. Build tests exercise both setuptools and Hatchling, with and without TestPyPI name rewriting. No tests perform package publication, create GitHub releases or change remote settings.

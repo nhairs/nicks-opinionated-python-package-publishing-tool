@@ -256,10 +256,7 @@ def execute(args) -> dict:
     if args.command == "build":
         validate_output(root, args.output)
     if args.command == "build" and not args.check_only:
-        data = make_bundle(root, args.output, config, execution, source, notes)
-        # Fail if tag, branch or selected bytes changed during the build.
-        if identity(root, config, execution) != data["source"]:
-            raise ValueError("source/tag eligibility changed during build; discard bundle")
+        make_bundle(root, args.output, config, execution, source, notes)
         result["bundle"] = str(args.output.resolve())
     elif args.command == "publish-release-preflight":
         data, bundled_config = read_bundle(args.bundle)
@@ -267,7 +264,7 @@ def execute(args) -> dict:
         if config != bundled_config:
             raise ValueError("bundle policy disagrees with checkout/CLI configuration")
         if source != data["source"]:
-            raise ValueError("bundle source identity differs from current tag/source inputs")
+            raise ValueError("bundle source identity differs from current tag/working-tree status")
         if notes is not None and (args.bundle / "notes.md").read_text(encoding="utf-8") != notes:
             raise ValueError("bundle release notes differ from current source")
     output = os.environ.get("GITHUB_OUTPUT") if not execution.local else None

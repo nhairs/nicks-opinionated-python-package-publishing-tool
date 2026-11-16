@@ -1,6 +1,7 @@
 """Public command line; checks always precede nopt-owned actions."""
 
 import argparse
+from collections.abc import Mapping
 from importlib.resources import files
 import json
 import os
@@ -15,15 +16,16 @@ from urllib.error import URLError
 
 from .bundle import make_bundle, read_bundle, validate_output
 from .changelog import release_notes
-from .config import load
+from .config import Config, load
 from .remote import Client
-from .source import Context, identity
+from .source import Context, SourceIdentity, identity
 
 
 def parser() -> argparse.ArgumentParser:
     """Build the agreed small CLI without speculative skip/force flags."""
     result = argparse.ArgumentParser(prog="nopt")
     commands = result.add_subparsers(dest="command", required=True)
+    ### Release workflow commands share policy overrides and explicit execution mode.
     for name, help_text in (
         ("ci-preflight", "Check source release eligibility before user CI"),
         ("build", "Check eligibility, build distributions and prepare a local release bundle"),
@@ -96,6 +98,7 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument(
                 "--github-release-types", nargs="*", choices=("dev", "pre", "final"), default=None
             )
+    ### Template generation does not require workflow context.
     template = commands.add_parser(
         "workflow-template", help="Print or write an editable GHA release workflow"
     )
@@ -103,7 +106,7 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def context(args) -> Context:
+def context(args: argparse.Namespace) -> Context:
     """Require GHA identity unless the caller explicitly selects local mode."""
     if getattr(args, "local", False):
         return Context(True, args.tag)
@@ -124,7 +127,7 @@ def context(args) -> Context:
     return Context(False, tag, repository, run_id, attempt)
 
 
-def overrides(args) -> dict:
+def overrides(args: argparse.Namespace) -> dict[str, object]:
     """Only explicitly supplied options override TOML."""
     keys = (
         "repository",
@@ -140,7 +143,9 @@ def overrides(args) -> dict:
     return {key: value for key in keys if (value := getattr(args, key, None)) is not None}
 
 
-def check_source(root: Path, config, execution: Context, client: Client) -> tuple[dict, str | None]:
+def check_source(
+    root: Path, config: Config, execution: Context, client: Client
+) -> tuple[SourceIdentity, str | None]:
     """Refuse an existing index version before tag/GitHub diagnostics."""
     client.absent(config.repository, config.distribution, config.version)
     source = identity(root, config, execution)
@@ -154,9 +159,11 @@ def check_source(root: Path, config, execution: Context, client: Client) -> tupl
     return source, notes
 
 
-def check_bundle_context(data: dict, execution: Context) -> None:
+def check_bundle_context(data: Mapping[str, object], execution: Context) -> None:
     """Bind downloaded bytes to this exact workflow run, including reruns."""
-    original = data.get("context", {})
+    original = data.get("context")
+    if not isinstance(original, dict):
+        raise ValueError("bundle context must be an object")
     if execution.local:
         return
     for key in ("github_repository", "run_id", "run_attempt"):
@@ -164,10 +171,14 @@ def check_bundle_context(data: dict, execution: Context) -> None:
             raise ValueError(f"bundle belongs to a different workflow {key}")
     if original.get("local") is not False:
         raise ValueError("local build bundles cannot be published by the GHA workflow")
+    return
 
 
-def publish_github(args, execution: Context, client: Client) -> dict:
+def publish_github(
+    args: argparse.Namespace, execution: Context, client: Client
+) -> dict[str, str | int]:
     """Gate announcement on exact index bytes; existing releases always fail."""
+    ### Validate the original bundle and workflow identity before network checks.
     data, config = read_bundle(args.bundle)
     check_bundle_context(data, execution)
     if not config.github_requested:
@@ -183,6 +194,7 @@ def publish_github(args, execution: Context, client: Client) -> dict:
         for name, digest in data["files"].items()
         if name.startswith("dist/")
     }
+    ### Gate GitHub publication on exact index filenames and hashes.
     client.verify_index(config.repository, config.distribution, config.version, expected)
     # Recheck tag and existence after bounded metadata waiting.
     client.check_tag(data["source"]["tag"], data["source"]["commit"])
@@ -194,6 +206,7 @@ def publish_github(args, execution: Context, client: Client) -> dict:
         if config.changelog is not False
         else ""
     )
+    ### Create the release once; existing-release recovery remains deferred.
     release = client.github(
         "releases",
         "POST",
@@ -207,13 +220,20 @@ def publish_github(args, execution: Context, client: Client) -> dict:
             "make_latest": "true" if config.group == "final" else "false",
         },
     )
-    if not isinstance(release, dict) or not isinstance(release.get("id"), int):
+    if not isinstance(release, dict):
         raise ValueError("GitHub did not return a release identity")
+    release_id = release.get("id")
+    if not isinstance(release_id, int) or isinstance(release_id, bool):
+        raise ValueError("GitHub did not return an integer release identity")
+    release_url = release.get("html_url")
+    if not isinstance(release_url, str):
+        raise ValueError("GitHub did not return a release URL")
+    ### Attach only the verified original files.
     assets = [p for p in args.bundle.rglob("*") if p.is_file()]
     for path in sorted(assets):
         url = (
             f"https://uploads.github.com/repos/{execution.github_repository}"
-            f"/releases/{release['id']}/assets?name={quote(path.name, safe='')}"
+            f"/releases/{release_id}/assets?name={quote(path.name, safe='')}"
         )
         result = client.request(
             url,
@@ -226,10 +246,10 @@ def publish_github(args, execution: Context, client: Client) -> dict:
             raise ValueError(
                 f"GitHub asset upload did not complete: {path.name}; recovery is deferred"
             )
-    return {"github_release": release.get("html_url"), "assets": len(assets)}
+    return {"github_release": release_url, "assets": len(assets)}
 
 
-def execute(args) -> dict:
+def execute(args: argparse.Namespace) -> dict[str, str | int | bool]:
     """Run a selected command and return machine-readable result metadata."""
     if args.command == "workflow-template":
         content = files("nopt").joinpath("workflow.yml").read_text(encoding="utf-8")
@@ -247,7 +267,7 @@ def execute(args) -> dict:
     root = args.project.resolve()
     config = load(root, overrides(args))
     source, notes = check_source(root, config, execution, client)
-    result = {
+    result: dict[str, str | int | bool] = {
         "version": config.version,
         "distribution": config.distribution,
         "tag": source["tag"],

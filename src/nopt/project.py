@@ -17,10 +17,16 @@ def rename_distribution(path: Path, name: str) -> None:
     end = len(text) if next_table is None else start + next_table.start()
     table = text[start:end]
     pattern = r"""(?m)^(name[ \t]*=[ \t]*)(?:"[^"\r\n]*"|'[^'\r\n]*')([ \t]*(?:#[^\r\n]*)?\r?)$"""
-    table, count = re.subn(pattern, lambda match: match[1] + '"' + name + '"' + match[2], table)
+
+    def replacement(match: re.Match[str]) -> str:
+        """Replace only the name string, retaining its assignment and trailing content."""
+        return match[1] + '"' + name + '"' + match[2]
+
+    table, count = re.subn(pattern, replacement, table)
     if count != 1:
         raise ValueError("TestPyPI renaming requires one simple project.name string assignment")
     result = text[:start] + table + text[end:]
     if tomllib.loads(result)["project"]["name"] != name:
         raise ValueError("build name mismatch")
     path.write_bytes(result.encode("utf-8"))
+    return

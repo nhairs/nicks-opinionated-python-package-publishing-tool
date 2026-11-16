@@ -35,6 +35,6 @@ line-length = 100
 max-line-length = 100
 
 [tool.pylint.messages_control]
-disable = ["too-few-public-methods", "too-many-arguments", "too-many-positional-arguments"]
+disable = ["useless-return"]
 
 [tool.nopt]

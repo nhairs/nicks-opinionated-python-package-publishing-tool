@@ -3,8 +3,27 @@
 from dataclasses import dataclass
 from pathlib import Path
 import subprocess
+from typing import TypedDict
 
 from .config import Config
+
+
+class SourceIdentity(TypedDict):
+    """Source commit, release tag and pre-build Git status."""
+
+    commit: str
+    tag: str
+    dirty: bool
+
+
+class ContextData(TypedDict):
+    """Serialized execution context stored in a release bundle."""
+
+    local: bool
+    tag: str | None
+    github_repository: str | None
+    run_id: str | None
+    run_attempt: str | None
 
 
 @dataclass(frozen=True)
@@ -49,7 +68,7 @@ def check_branches(root: Path, config: Config, context: Context, commit: str) ->
     raise ValueError("release commit is not reachable from any existing allowed branch")
 
 
-def identity(root: Path, config: Config, context: Context) -> dict:
+def identity(root: Path, config: Config, context: Context) -> SourceIdentity:
     """Verify tag/branch/dirty policy and return source identity."""
     commit = git(root, "rev-parse", "HEAD")
     expected = "v" + config.version

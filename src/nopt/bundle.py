@@ -1,6 +1,6 @@
 """Build and verify immutable release bundles using archive metadata and hashes."""
 
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from email.parser import BytesParser
 import hashlib
 import json
@@ -12,14 +12,26 @@ import sys
 import tarfile
 import tempfile
 import zipfile
+from typing import TypedDict, cast
 
 from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
 
-from .config import Config, validate
-from .source import Context
+from .config import Config
+from .source import Context, ContextData, SourceIdentity
 from .project import rename_distribution
 
-SCHEMA = 1
+_SCHEMA_VERSION = 1
+
+
+class ReleaseManifest(TypedDict):
+    """Verified metadata binding the release policy, source and original bundle files."""
+
+    schema_version: int
+    config: dict[str, object]
+    source: SourceIdentity
+    distribution: str
+    context: ContextData
+    files: dict[str, str]
 
 
 def sha256(path: Path) -> str:
@@ -88,10 +100,17 @@ def validate_output(root: Path, destination: Path) -> Path:
     return destination
 
 
-def make_bundle(  # pylint: disable=too-many-locals
-    root: Path, destination: Path, config: Config, context: Context, source: dict, notes: str | None
-) -> dict:
+# pylint: disable-next=too-many-locals,too-many-arguments,too-many-positional-arguments
+def make_bundle(
+    root: Path,
+    destination: Path,
+    config: Config,
+    context: Context,
+    source: SourceIdentity,
+    notes: str | None,
+) -> ReleaseManifest:
     """Build from the checkout and prepare a complete local release bundle."""
+    ### Build from the checkout after eligibility has been checked.
     destination = validate_output(root, destination)
     with tempfile.TemporaryDirectory() as temporary:
         bundle = Path(temporary) / "bundle"
@@ -111,25 +130,26 @@ def make_bundle(  # pylint: disable=too-many-locals
             ],
             check=True,
         )
+        ### Validate artifacts and bind them to the original project configuration.
         hashes = validate_artifacts(distributions, config.distribution, config.version)
         if notes is not None:
             (bundle / "notes.md").write_text(notes, encoding="utf-8")
             hashes["notes.md"] = sha256(bundle / "notes.md")
-        data = {
-            "schema_version": SCHEMA,
-            "config": asdict(config),
+        data: ReleaseManifest = {
+            "schema_version": _SCHEMA_VERSION,
+            "config": config.to_mapping(),
             "source": source,
             "distribution": config.distribution,
-            "context": asdict(context),
+            "context": cast(ContextData, asdict(context)),
             "files": {
                 ("dist/" + name if name.endswith((".whl", ".tar.gz")) else name): digest
                 for name, digest in hashes.items()
             },
         }
-        data = json.loads(json.dumps(data))
         (bundle / "release.json").write_text(
             json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        ### Preserve checksum text and original bytes in the final local bundle.
         checksums = dict(data["files"])
         checksums["release.json"] = sha256(bundle / "release.json")
         (bundle / "SHA256SUMS").write_text(
@@ -141,12 +161,16 @@ def make_bundle(  # pylint: disable=too-many-locals
     return data
 
 
-def read_bundle(root: Path) -> tuple[dict, Config]:  # pylint: disable=too-many-branches
-    """Verify every byte, reject extra files, and validate the bound release policy."""
+# pylint: disable-next=too-many-branches,too-many-locals,too-many-statements
+def read_bundle(
+    root: Path,
+) -> tuple[ReleaseManifest, Config]:
+    """Verify every byte and narrow decoded release metadata before using it."""
+    ### Verify checksums and reject paths outside the original bundle.
     root = root.resolve()
     if (root / "SHA256SUMS").is_symlink():
         raise ValueError("SHA256SUMS must be a regular file")
-    checksums = {}
+    checksums: dict[str, str] = {}
     for line in (root / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
         match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
         if not match:
@@ -161,42 +185,71 @@ def read_bundle(root: Path) -> tuple[dict, Config]:  # pylint: disable=too-many-
             raise ValueError(f"bundle checksum mismatch: {name}")
         checksums[name] = digest
     actual = {
-        p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file() or p.is_symlink()
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() or path.is_symlink()
     }
     if actual != set(checksums) | {"SHA256SUMS"} or "release.json" not in checksums:
         raise ValueError("bundle file set disagrees with SHA256SUMS")
-    data = json.loads((root / "release.json").read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or not all(
-        isinstance(data.get(key), dict) for key in ("config", "source", "context", "files")
-    ):
-        raise ValueError("invalid release manifest structure")
-    if data.get("schema_version") != SCHEMA or data.get("files") != {
-        k: v for k, v in checksums.items() if k != "release.json"
+
+    ### Narrow untrusted JSON to the schema's configuration and identity fields.
+    decoded: object = json.loads((root / "release.json").read_text(encoding="utf-8"))
+    if not isinstance(decoded, dict):
+        raise ValueError("release manifest must be an object")
+    data = cast(dict[str, object], decoded)
+    schema = data.get("schema_version")
+    if not isinstance(schema, int) or isinstance(schema, bool) or schema != _SCHEMA_VERSION:
+        raise ValueError("unsupported release manifest schema")
+    expected_files = {name: digest for name, digest in checksums.items() if name != "release.json"}
+    if data.get("files") != expected_files:
+        raise ValueError("release manifest disagrees with checksums")
+    config_data = data.get("config")
+    if not isinstance(config_data, dict):
+        raise ValueError("release configuration must be an object")
+    config = Config.from_mapping(cast(dict[str, object], config_data))
+    distribution = data.get("distribution")
+    if not isinstance(distribution, str) or distribution != config.distribution:
+        raise ValueError("invalid release distribution name")
+    source_data = data.get("source")
+    if not isinstance(source_data, dict):
+        raise ValueError("release source identity must be an object")
+    commit = source_data.get("commit")
+    tag = source_data.get("tag")
+    dirty = source_data.get("dirty")
+    if not isinstance(commit, str) or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit):
+        raise ValueError("invalid release source commit")
+    if not isinstance(tag, str) or tag != "v" + config.version or not isinstance(dirty, bool):
+        raise ValueError("invalid release tag or dirty status")
+    context_data = data.get("context")
+    if not isinstance(context_data, dict) or set(context_data) != {
+        field.name for field in fields(Context)
     }:
-        raise ValueError("release manifest disagrees with checksums/schema")
-    allowed_files = {
-        "dist/" + name
-        for name in validate_artifacts(
-            root / "dist", data["distribution"], data["config"]["version"]
-        )
-    }
-    if data["config"].get("changelog") is not False:
-        allowed_files.add("notes.md")
-    if set(data["files"]) != allowed_files:
-        raise ValueError("unexpected release bundle member")
-    config = validate(Config(**data["config"]))
-    if (
-        not isinstance(data["source"].get("dirty"), bool)
-        or data.get("distribution") != config.distribution
-        or data["source"].get("tag") != "v" + config.version
-        or not re.fullmatch(r"[0-9a-f]{40,64}", data["source"].get("commit", ""))
+        raise ValueError("invalid release execution context")
+    if not isinstance(context_data.get("local"), bool) or any(
+        value is not None and not isinstance(value, str)
+        for key, value in context_data.items()
+        if key != "local"
     ):
-        raise ValueError("invalid release identity")
-    hashes = validate_artifacts(root / "dist", config.distribution, config.version)
-    if {"dist/" + name: digest for name, digest in hashes.items()} != {
-        k: v for k, v in data["files"].items() if k.startswith("dist/")
+        raise ValueError("invalid release execution context values")
+
+    ### Check distribution metadata and the configured optional notes file.
+    hashes = validate_artifacts(root / "dist", distribution, config.version)
+    artifact_files = {"dist/" + name: digest for name, digest in hashes.items()}
+    allowed_files = set(artifact_files)
+    if config.changelog is not False:
+        allowed_files.add("notes.md")
+    if set(expected_files) != allowed_files:
+        raise ValueError("unexpected release bundle member")
+    if artifact_files != {
+        name: digest for name, digest in expected_files.items() if name.startswith("dist/")
     }:
         raise ValueError("distribution hashes disagree with manifest")
-    if (config.changelog is not False) != ("notes.md" in data["files"]):
-        raise ValueError("release notes disagree with configured policy")
-    return data, config
+    manifest: ReleaseManifest = {
+        "schema_version": schema,
+        "config": config.to_mapping(),
+        "source": {"commit": commit, "tag": tag, "dirty": dirty},
+        "distribution": distribution,
+        "context": cast(ContextData, context_data),
+        "files": expected_files,
+    }
+    return manifest, config

@@ -1,6 +1,7 @@
 """Validate the deliberately small public configuration surface."""
 
-from dataclasses import dataclass, fields, replace
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 import re
 import tomllib
@@ -8,8 +9,8 @@ import tomllib
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 
-GROUPS = {"dev", "pre", "final"}
-VERSION = re.compile(
+_GROUPS = {"dev", "pre", "final"}
+_VERSION_PATTERN = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:(?:\.dev|a|b|rc)(?:0|[1-9][0-9]*))?"
 )
 
@@ -29,6 +30,26 @@ class Config:  # pylint: disable=too-many-instance-attributes
     testpypi_username: str | None = None
     github_release_publish: bool = True
     github_release_types: tuple[str, ...] = ("pre", "final")
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object]) -> "Config":
+        """Resolve untrusted policy values into a validated immutable configuration."""
+        name = values.get("name")
+        version = values.get("version")
+        if not isinstance(name, str) or not isinstance(version, str):
+            raise ValueError("project.name and project.version must be static strings")
+        allowed = {field.name for field in fields(cls)}
+        if unknown := set(values) - allowed:
+            raise ValueError(f"unknown configuration fields: {', '.join(sorted(unknown))}")
+        policy = {key: value for key, value in values.items() if key not in {"name", "version"}}
+        return validate(replace(cls(name, version), **policy))
+
+    def to_mapping(self) -> dict[str, object]:
+        """Represent resolved configuration using JSON-compatible lists and scalars."""
+        return {
+            key: list(value) if isinstance(value, tuple) else value
+            for key, value in asdict(self).items()
+        }
 
     @property
     def group(self) -> str:
@@ -55,7 +76,7 @@ def validate(config: Config) -> Config:  # pylint: disable=too-many-branches
         r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", config.name
     ):
         raise ValueError("project.name must be a distribution name")
-    if not isinstance(config.version, str) or not VERSION.fullmatch(config.version):
+    if not isinstance(config.version, str) or not _VERSION_PATTERN.fullmatch(config.version):
         raise ValueError("version must be canonical X.Y.Z with at most one .devN/aN/bN/rcN suffix")
     if str(Version(config.version)) != config.version:
         raise ValueError("version must use canonical spelling")
@@ -69,7 +90,7 @@ def validate(config: Config) -> Config:  # pylint: disable=too-many-branches
         value = getattr(config, setting)
         if (
             not isinstance(value, (tuple, list))
-            or any(not isinstance(item, str) or item not in GROUPS for item in value)
+            or any(not isinstance(item, str) or item not in _GROUPS for item in value)
             or len(set(value)) != len(value)
         ):
             raise ValueError(
@@ -114,7 +135,7 @@ def validate(config: Config) -> Config:  # pylint: disable=too-many-branches
     )
 
 
-def load(root: Path, overrides: dict | None = None) -> Config:
+def load(root: Path, overrides: Mapping[str, object] | None = None) -> Config:
     """Read TOML with explicit CLI overrides and preserve false values."""
     data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     project = data.get("project", {})
@@ -132,12 +153,10 @@ def load(root: Path, overrides: dict | None = None) -> Config:
     unknown = {key for key in table if key.replace("-", "_") not in allowed}
     if unknown:
         raise ValueError(f"unknown tool.nopt settings: {', '.join(sorted(unknown))}")
-    config = Config(
-        project.get("name"),
-        project.get("version"),
-        **{
-            key.replace("-", "_"): tuple(value) if isinstance(value, list) else value
-            for key, value in table.items()
-        },
-    )
-    return validate(replace(config, **(overrides or {})))
+    values: dict[str, object] = {
+        "name": project.get("name"),
+        "version": project.get("version"),
+        **{key.replace("-", "_"): value for key, value in table.items()},
+        **(overrides or {}),
+    }
+    return Config.from_mapping(values)

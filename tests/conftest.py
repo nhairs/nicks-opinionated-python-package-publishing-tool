@@ -1,12 +1,13 @@
 """Real local source repositories for behavioral tests."""
 
+from pathlib import Path
 import subprocess
 
 import pytest
 
 
 @pytest.fixture
-def project(tmp_path):
+def project(tmp_path: Path) -> Path:
     """Create a minimal tagged setuptools project with an excluded root file."""
     root = tmp_path / "project"
     root.mkdir()

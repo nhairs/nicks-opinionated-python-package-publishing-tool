@@ -2,12 +2,13 @@
 
 from dataclasses import replace
 from pathlib import Path
+import json
 import subprocess
 import sys
 
 import pytest
 
-from nopt.bundle import make_bundle, read_bundle, validate_artifacts
+from nopt.bundle import make_bundle, read_bundle, sha256, validate_artifacts
 from nopt.changelog import release_notes
 from nopt.config import load
 from nopt.source import Context, identity
@@ -16,7 +17,11 @@ from nopt.cli import check_bundle_context, main
 
 @pytest.mark.parametrize("backend", ["setuptools", "hatchling"])
 @pytest.mark.parametrize("suffix", [False, True])
-def test_checkout_build_and_bundle(project, tmp_path, suffix, backend):
+def test_checkout_build_and_bundle(
+    project: Path, tmp_path: Path, suffix: bool, backend: str
+) -> None:
+    """Build in the checkout and resolve publishing identity from original configuration."""
+    ### Configure the real backend and effective index-facing name.
     if backend == "hatchling":
         path = project / "pyproject.toml"
         text = (
@@ -31,6 +36,7 @@ def test_checkout_build_and_bundle(project, tmp_path, suffix, backend):
         config = replace(config, repository="testpypi", testpypi_username="alice")
     context = Context(True)
     source = identity(project, config, context)
+    ### Build from the checked checkout and verify only the requested name edit.
     original_pyproject = (project / "pyproject.toml").read_text(encoding="utf-8")
     destination = tmp_path / "bundle"
     data = make_bundle(
@@ -49,6 +55,7 @@ def test_checkout_build_and_bundle(project, tmp_path, suffix, backend):
             / "src"
             / ("fixture_package_alice.egg-info" if suffix else "fixture_package.egg-info")
         ).is_dir()
+    ### A later command derives the same identity from original configuration.
     verified, resolved = read_bundle(destination)
     assert verified == data
     assert resolved.distribution == config.distribution
@@ -63,17 +70,20 @@ def test_checkout_build_and_bundle(project, tmp_path, suffix, backend):
     assert fresh_config.distribution == resolved.distribution
     wheel = next((destination / "dist").glob("*.whl"))
     # Import actual built Python from the wheel, independently of the source tree.
+    ### Observe the built import as JSON, then check bundle tampering failures.
     result = subprocess.check_output(
         [
             sys.executable,
             "-I",
             "-c",
-            "import sys; sys.path.insert(0, sys.argv[1]); import fixture_package; print(fixture_package.VALUE)",
+            'import json, sys; sys.path.insert(0, sys.argv[1]); import fixture_package; print(json.dumps({"value": fixture_package.VALUE}))',
             str(wheel),
         ],
         text=True,
     )
-    assert result.strip() == "original"
+    observation: object = json.loads(result)
+    assert isinstance(observation, dict)
+    assert observation["value"] == "original"
     unexpected = destination / "extra.txt"
     unexpected.write_text("extra", encoding="utf-8")
     with pytest.raises(ValueError, match="file set"):
@@ -82,9 +92,11 @@ def test_checkout_build_and_bundle(project, tmp_path, suffix, backend):
     (destination / "notes.md").write_text("tampered", encoding="utf-8")
     with pytest.raises(ValueError, match="checksum"):
         read_bundle(destination)
+    return
 
 
-def test_context_binding():
+def test_context_binding() -> None:
+    """Reject a bundle originating from a different workflow attempt."""
     data = {
         "context": {
             "local": False,
@@ -100,32 +112,88 @@ def test_context_binding():
         check_bundle_context(
             data, Context(False, github_repository="owner/repo", run_id="1", run_attempt="2")
         )
+    return
 
 
-def test_template_refuses_overwrite(tmp_path):
+def test_template_refuses_overwrite(tmp_path: Path) -> None:
+    """Generate a workflow template without replacing an existing file."""
     path = tmp_path / "release.yml"
     assert main(["workflow-template", "--output", str(path)]) == 0
     assert "<your CI goes here>" in path.read_text(encoding="utf-8")
     assert main(["workflow-template", "--output", str(path)]) == 1
+    return
 
 
-def test_cli_requires_explicit_local_mode(project):
+def test_cli_requires_explicit_local_mode(project: Path) -> None:
+    """Require explicit local mode outside a GitHub Actions release job."""
     assert main(["ci-preflight", "--project", str(project)]) == 1
+    return
 
 
 @pytest.mark.parametrize(
     "entry", ["../outside", "/absolute", "dist/../../outside", "dist\\outside"]
 )
-def test_bundle_rejects_unsafe_paths(tmp_path, entry):
+def test_bundle_rejects_unsafe_paths(tmp_path: Path, entry: str) -> None:
+    """Reject escaping or platform-ambiguous paths in bundle checksums."""
     (tmp_path / "SHA256SUMS").write_text("a" * 64 + "  " + entry + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="unsafe"):
         read_bundle(tmp_path)
+    return
 
 
-def test_artifact_set_and_native_wheel_rejected(tmp_path):
+def test_artifact_set_and_native_wheel_rejected(tmp_path: Path) -> None:
+    """Reject incomplete artifact sets and native wheels in the pure-Python release flow."""
     with pytest.raises(ValueError, match="exactly"):
         validate_artifacts(tmp_path, "fixture", "1.2.3")
     (tmp_path / "fixture-1.2.3-cp313-cp313-linux_x86_64.whl").touch()
     (tmp_path / "fixture-1.2.3.tar.gz").touch()
     with pytest.raises(ValueError, match="pure-Python"):
         validate_artifacts(tmp_path, "fixture", "1.2.3")
+    return
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", True),
+        ("config", []),
+        ("source", None),
+        ("source", {"commit": None, "tag": "v1.2.3.dev4", "dirty": False}),
+        ("source", {"commit": "a" * 41, "tag": "v1.2.3.dev4", "dirty": False}),
+        ("context", {"local": "false"}),
+    ],
+)
+def test_bundle_rejects_malformed_metadata(
+    project: Path, tmp_path: Path, field: str, value: object
+) -> None:
+    """Reject malformed manifest fields after checksum verification without attribute errors."""
+    ### Build a valid bundle, then alter metadata while keeping its checksum coherent.
+    config = load(project)
+    bundle = tmp_path / "metadata-bundle"
+    context = Context(True)
+    make_bundle(
+        project,
+        bundle,
+        config,
+        context,
+        identity(project, config, context),
+        release_notes(project, config),
+    )
+    manifest_path = bundle / "release.json"
+    manifest: dict[str, object] = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[field] = value
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    checksum_path = bundle / "SHA256SUMS"
+    lines = checksum_path.read_text(encoding="utf-8").splitlines()
+    checksum_path.write_text(
+        "\n".join(
+            f"{sha256(manifest_path)}  release.json" if line.endswith("  release.json") else line
+            for line in lines
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    ### The invalid structure must fail at the metadata boundary.
+    with pytest.raises(ValueError):
+        read_bundle(bundle)
+    return

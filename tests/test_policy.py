@@ -1,5 +1,6 @@
 """Configuration, version, changelog and index policy boundaries."""
 
+from pathlib import Path
 from dataclasses import replace
 import pytest
 
@@ -20,9 +21,11 @@ from nopt.project import rename_distribution
         ("1.2.3rc1", "pre"),
     ],
 )
-def test_versions(version, group):
+def test_versions(version: str, group: str) -> None:
+    """Accept canonical version forms and classify their release groups."""
     config = validate(Config("fixture", version))
     assert config.group == group
+    return
 
 
 @pytest.mark.parametrize(
@@ -43,12 +46,15 @@ def test_versions(version, group):
         "1.2.3c1",
     ],
 )
-def test_rejected_versions(version):
+def test_rejected_versions(version: str) -> None:
+    """Reject unsupported or noncanonical version spellings."""
     with pytest.raises(ValueError):
         validate(Config("fixture", version))
+    return
 
 
-def test_defaults_and_explicit_false(project):
+def test_defaults_and_explicit_false(project: Path) -> None:
+    """Preserve explicit CLI false and empty values ahead of configuration defaults."""
     args = parser().parse_args(
         [
             "build",
@@ -65,6 +71,7 @@ def test_defaults_and_explicit_false(project):
     assert config.pre_release_branches is False
     assert config.allow_dirty == ()
     assert overrides(parser().parse_args(["build", "--local"])) == {}
+    return
 
 
 @pytest.mark.parametrize(
@@ -81,25 +88,32 @@ def test_defaults_and_explicit_false(project):
         {"testpypi_username": "alice"},
     ],
 )
-def test_bad_configuration(changes):
+def test_bad_configuration(changes: dict[str, object]) -> None:
+    """Reject invalid policy values and attempts to disable mandatory branch restrictions."""
     with pytest.raises(ValueError):
         validate(replace(Config("fixture", "1.2.3"), **changes))
+    return
 
 
-def test_unknown_settings(project):
+def test_unknown_settings(project: Path) -> None:
+    """Reject removed configuration options instead of silently accepting them."""
     with (project / "pyproject.toml").open("a") as stream:
         stream.write('version-mode = "declared"\n')
     with pytest.raises(ValueError, match="unknown"):
         load(project)
+    return
 
 
 @pytest.mark.parametrize("version", ["1.2.3.dev1", "1.2.3a1", "1.2.3rc1"])
-def test_unreleased_pre_and_dev(project, version):
+def test_unreleased_pre_and_dev(project: Path, version: str) -> None:
+    """Allow unreleased changelog sections for development and prerelease versions."""
     config = replace(load(project), version=version)
     assert "### Added" in release_notes(project, config)
+    return
 
 
-def test_changelog_rules(project):
+def test_changelog_rules(project: Path) -> None:
+    """Reject invalid dates, duplicate sections and sections containing only headings."""
     config = load(project)
     path = project / "docs" / "changelog.md"
     with pytest.raises(ValueError, match="date"):
@@ -117,18 +131,22 @@ def test_changelog_rules(project):
     with pytest.raises(ValueError, match="exactly one"):
         release_notes(project, config)
     assert release_notes(project, replace(config, changelog=False)) is None
+    return
 
 
-def test_testpypi_rename_preserves_other_content(project):
+def test_testpypi_rename_preserves_other_content(project: Path) -> None:
+    """Rewrite only the declared project name for a TestPyPI build."""
     path = project / "pyproject.toml"
     before = path.read_text(encoding="utf-8")
     rename_distribution(path, "fixture-package-alice")
     assert path.read_text(encoding="utf-8") == before.replace(
         'name = "fixture-package"', 'name = "fixture-package-alice"'
     )
+    return
 
 
-def test_index_partial_complete_conflicting():
+def test_index_partial_complete_conflicting() -> None:
+    """Distinguish incomplete index metadata from complete and conflicting file sets."""
     expected = {"one.whl": "a" * 64, "two.tar.gz": "b" * 64}
     one = {"filename": "one.whl", "digests": {"sha256": "a" * 64}}
     two = {"filename": "two.tar.gz", "digests": {"sha256": "b" * 64}}
@@ -143,10 +161,12 @@ def test_index_partial_complete_conflicting():
     ]:
         with pytest.raises(ValueError):
             publication_matches({"urls": files}, expected)
+    return
 
 
 @pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
-def test_rename_preserves_line_endings(project, newline):
+def test_rename_preserves_line_endings(project: Path, newline: bytes) -> None:
+    """Keep source line endings while changing the project name assignment."""
     path = project / "pyproject.toml"
     original = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", newline)
     path.write_bytes(original)
@@ -154,3 +174,4 @@ def test_rename_preserves_line_endings(project, newline):
     assert path.read_bytes() == original.replace(
         b'name = "fixture-package"', b'name = "fixture-package-alice"'
     )
+    return

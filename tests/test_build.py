@@ -12,7 +12,7 @@ from nopt.bundle import make_bundle, read_bundle, sha256, validate_artifacts
 from nopt.changelog import release_notes
 from nopt.config import load
 from nopt.source import Context, identity
-from nopt.cli import check_bundle_context, context, main, parser
+from nopt.cli import check_bundle_context, check_publish_bundle, context, main, parser
 
 
 @pytest.mark.parametrize("backend", ["setuptools", "hatchling"])
@@ -46,6 +46,7 @@ def test_checkout_build_and_bundle(
         project, destination, config, context, source, release_notes(project, config)
     )
     assert (project / "pyproject.toml").read_bytes() == original_bytes
+    assert (destination / "pyproject.toml").read_bytes() == original_bytes
     # Ordinary setuptools build outputs are created in the actual checkout.
     if backend == "setuptools":
         assert (
@@ -54,7 +55,11 @@ def test_checkout_build_and_bundle(
             / ("fixture_package_alice.egg-info" if suffix else "fixture_package.egg-info")
         ).is_dir()
     ### A later command derives the same identity from original configuration.
-    verified, resolved = read_bundle(destination)
+    policy = {"repository": target, **({"testpypi_username": "alice"} if suffix else {})}
+    if suffix:
+        with pytest.raises(ValueError, match="invocation configuration"):
+            read_bundle(destination)
+    verified, resolved = read_bundle(destination, policy)
     assert verified == data
     assert resolved.distribution == config.distribution
     assert resolved.name == "fixture-package"
@@ -85,11 +90,11 @@ def test_checkout_build_and_bundle(
     unexpected = destination / "extra.txt"
     unexpected.write_text("extra", encoding="utf-8")
     with pytest.raises(ValueError, match="file set"):
-        read_bundle(destination)
+        read_bundle(destination, policy)
     unexpected.unlink()
-    (destination / "notes.md").write_text("tampered", encoding="utf-8")
+    (destination / "release-notes.md").write_text("tampered", encoding="utf-8")
     with pytest.raises(ValueError, match="checksum"):
-        read_bundle(destination)
+        read_bundle(destination, policy)
     return
 
 
@@ -154,7 +159,7 @@ def test_artifact_set_and_native_wheel_rejected(tmp_path: Path) -> None:
     "field,value",
     [
         ("schema_version", True),
-        ("config", []),
+        ("distribution", []),
         ("source", None),
         ("source", {"commit": None, "tag": "v1.2.3.dev4", "dirty": False}),
         ("source", {"commit": "a" * 41, "tag": "v1.2.3.dev4", "dirty": False}),
@@ -273,4 +278,56 @@ def test_gha_tag_comes_only_from_environment(
     else:
         with pytest.raises(ValueError, match="local-only"):
             context(args)
+    return
+
+
+@pytest.mark.parametrize("with_notes", [False, True])
+def test_publish_bundle_needs_no_checkout(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_notes: bool
+) -> None:
+    """Consume original inputs from the bundle alone and reject changed workflow identity."""
+    if not with_notes:
+        with (project / "pyproject.toml").open("a", encoding="utf-8") as stream:
+            stream.write("changelog = false\n")
+    config = load(project)
+    execution = Context(False, "v1.2.3.dev4", "owner/repo", "123", "1")
+    source = identity(project, config, Context(True))
+    original = (project / "pyproject.toml").read_bytes()
+    bundle = tmp_path / "bundle"
+    make_bundle(
+        project,
+        bundle,
+        replace(config, github_release_publish=False),
+        execution,
+        source,
+        release_notes(project, config),
+    )
+    project.rename(tmp_path / "unused-source")
+    empty = tmp_path / "publishing-job"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+    assert not (empty / "pyproject.toml").exists()
+    assert not (empty / ".git").exists()
+    data, bundled_config = check_publish_bundle(bundle, execution, source["commit"])
+    assert data["source"] == source
+    assert bundled_config == config
+    assert bundled_config.github_release_publish is True
+    assert "config" not in data
+    _, per_step = check_publish_bundle(
+        bundle, execution, source["commit"], {"github_release_publish": False}
+    )
+    assert per_step.github_release_publish is False
+    assert check_publish_bundle(bundle, execution, source["commit"])[1] == config
+    assert (bundle / "pyproject.toml").read_bytes() == original
+    assert (bundle / "release-notes.md").exists() is with_notes
+    assert not (bundle / "notes.md").exists()
+    with pytest.raises(ValueError, match="current commit"):
+        check_publish_bundle(bundle, execution, "0" * 40)
+    with pytest.raises(ValueError, match="current tag"):
+        check_publish_bundle(bundle, replace(execution, tag="v9.9.9"), source["commit"])
+    with pytest.raises(ValueError, match="run_id"):
+        check_publish_bundle(bundle, replace(execution, run_id="456"), source["commit"])
+    (bundle / "pyproject.toml").write_bytes(original + b"# edited\n")
+    with pytest.raises(ValueError, match="checksum"):
+        check_publish_bundle(bundle, execution, source["commit"])
     return

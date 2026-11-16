@@ -1,5 +1,6 @@
 """Build and verify immutable release bundles using archive metadata and hashes."""
 
+from collections.abc import Mapping
 from dataclasses import asdict, fields
 from email.parser import BytesParser
 import hashlib
@@ -16,18 +17,17 @@ from typing import TypedDict, cast
 
 from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
 
-from .config import Config
+from .config import Config, load
 from .source import Context, ContextData, SourceIdentity
 from .project import rename_distribution
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 class ReleaseManifest(TypedDict):
-    """Verified metadata binding the release policy, source and original bundle files."""
+    """Verified metadata binding release identity, source and original bundle files."""
 
     schema_version: int
-    config: dict[str, object]
     source: SourceIdentity
     distribution: str
     context: ContextData
@@ -115,14 +115,11 @@ def make_bundle(
     with tempfile.TemporaryDirectory() as temporary:
         bundle = Path(temporary) / "bundle"
         project_file = root / "pyproject.toml"
-        original = (
-            project_file.read_bytes()
-            if config.repository == "testpypi" and config.distribution != config.name
-            else None
-        )
+        original = project_file.read_bytes()
+        renamed = config.repository == "testpypi" and config.distribution != config.name
         distributions = bundle / "dist"
         try:
-            if original is not None:
+            if renamed:
                 # Eligibility is checked before the temporary name/formatting changes.
                 rename_distribution(project_file, config.distribution)
             subprocess.run(
@@ -139,7 +136,7 @@ def make_bundle(
             )
         finally:
             # Restore original comments, formatting and pre-existing uncommitted edits.
-            if original is not None:
+            if renamed:
                 project_file.write_bytes(original)
         ### Validate artifacts and bind them to the original project configuration.
         hashes = {
@@ -148,12 +145,13 @@ def make_bundle(
                 distributions, config.distribution, config.version
             ).items()
         }
+        (bundle / "pyproject.toml").write_bytes(original)
+        hashes["pyproject.toml"] = sha256(bundle / "pyproject.toml")
         if notes is not None:
-            (bundle / "notes.md").write_text(notes, encoding="utf-8")
-            hashes["notes.md"] = sha256(bundle / "notes.md")
+            (bundle / "release-notes.md").write_text(notes, encoding="utf-8")
+            hashes["release-notes.md"] = sha256(bundle / "release-notes.md")
         data: ReleaseManifest = {
             "schema_version": _SCHEMA_VERSION,
-            "config": config.to_mapping(),
             "source": source,
             "distribution": config.distribution,
             "context": cast(ContextData, asdict(context)),
@@ -176,7 +174,7 @@ def make_bundle(
 
 # pylint: disable-next=too-many-branches,too-many-locals,too-many-statements
 def read_bundle(
-    root: Path,
+    root: Path, overrides: Mapping[str, object] | None = None
 ) -> tuple[ReleaseManifest, Config]:
     """Verify every byte and narrow decoded release metadata before using it."""
     ### Verify checksums and reject paths outside the original bundle.
@@ -216,13 +214,10 @@ def read_bundle(
     expected_files = {name: digest for name, digest in checksums.items() if name != "release.json"}
     if data.get("files") != expected_files:
         raise ValueError("release manifest disagrees with checksums")
-    config_data = data.get("config")
-    if not isinstance(config_data, dict):
-        raise ValueError("release configuration must be an object")
-    config = Config.from_mapping(cast(dict[str, object], config_data))
+    config = load(root, overrides)
     distribution = data.get("distribution")
     if not isinstance(distribution, str) or distribution != config.distribution:
-        raise ValueError("invalid release distribution name")
+        raise ValueError("bundle distribution disagrees with this invocation configuration")
     source_data = data.get("source")
     if not isinstance(source_data, dict):
         raise ValueError("release source identity must be an object")
@@ -245,21 +240,22 @@ def read_bundle(
     ):
         raise ValueError("invalid release execution context values")
 
-    ### Check distribution metadata and the configured optional notes file.
-    hashes = validate_artifacts(root / "dist", distribution, config.version)
-    artifact_files = {"dist/" + name: digest for name, digest in hashes.items()}
-    allowed_files = set(artifact_files)
-    if config.changelog is not False:
-        allowed_files.add("notes.md")
+    ### Trust build-time metadata checks; verify only the checked bundle layout here.
+    artifact_files = {name for name in expected_files if name.startswith("dist/")}
+    if (
+        len(artifact_files) != 2
+        or sum(name.endswith(".whl") for name in artifact_files) != 1
+        or sum(name.endswith(".tar.gz") for name in artifact_files) != 1
+        or any(Path(name).parent.as_posix() != "dist" for name in artifact_files)
+    ):
+        raise ValueError("bundle must contain exactly one wheel and one sdist under dist/")
+    allowed_files = artifact_files | {"pyproject.toml"}
+    if "release-notes.md" in expected_files:
+        allowed_files.add("release-notes.md")
     if set(expected_files) != allowed_files:
         raise ValueError("unexpected release bundle member")
-    if artifact_files != {
-        name: digest for name, digest in expected_files.items() if name.startswith("dist/")
-    }:
-        raise ValueError("distribution hashes disagree with manifest")
     manifest: ReleaseManifest = {
         "schema_version": schema,
-        "config": config.to_mapping(),
         "source": {"commit": commit, "tag": tag, "dirty": dirty},
         "distribution": distribution,
         "context": cast(ContextData, context_data),

@@ -1,7 +1,7 @@
 """Validate the deliberately small public configuration surface."""
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 import re
 import tomllib
@@ -53,13 +53,6 @@ class Config:  # pylint: disable=too-many-instance-attributes
             raise ValueError(f"unknown configuration fields: {', '.join(sorted(unknown))}")
         policy = {key: value for key, value in values.items() if key not in {"name", "version"}}
         return validate(replace(cls(name, version), **policy))
-
-    def to_mapping(self) -> dict[str, object]:
-        """Represent resolved configuration using JSON-compatible lists and scalars."""
-        return {
-            key: list(value) if isinstance(value, tuple) else value
-            for key, value in asdict(self).items()
-        }
 
     @property
     def group(self) -> str:

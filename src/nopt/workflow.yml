@@ -37,7 +37,6 @@ jobs:
     needs: [preflight, ci]
     runs-on: ubuntu-latest
     outputs:
-      github_requested: ${{ steps.build.outputs.github_requested }}
       artifact_id: ${{ steps.bundle.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
@@ -67,10 +66,6 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -98,7 +93,6 @@ jobs:
           if-no-files-found: warn
   github-release:
     needs: [build, publish]
-    if: needs.build.outputs.github_requested == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

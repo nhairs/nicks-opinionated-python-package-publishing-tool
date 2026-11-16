@@ -66,7 +66,7 @@ Exactly one matching level-two section is required and the complete section is u
 | Project CI | Your lint and tests |
 | `nopt build` | Repeat eligibility checks, build from the checkout using isolated `python -m build --installer=uv`, validate artifacts and create the bundle |
 | Actions upload / approval / download | Preserve the original bundle and gate publishing |
-| `nopt publish-release-preflight --bundle PATH` | Verify exact bundle bytes, policy, commit/tag and dirty status, and index eligibility |
+| `nopt publish-release-preflight --bundle PATH` | Verify bundle integrity and current commit/tag/workflow identity, then recheck index absence and live GitHub state |
 | PyPA publishing action | OIDC authentication, attestations and PyPI/TestPyPI upload |
 | `nopt publish-github-release --bundle PATH` | If configured, wait for exact PyPI filenames/hashes, then publish the GitHub release and original assets |
 
@@ -87,17 +87,19 @@ nopt build --local --output /absolute/path/to/new-bundle
 nopt publish-release-preflight --local --bundle /absolute/path/to/new-bundle
 ```
 
-Local mode derives project/version/commit from the checkout and the expected tag from the version. `--project PATH` selects another checkout; `--tag` is local-only and must identify the same existing canonical tag pointing to HEAD. Local mode checks local branches without fetching. GHA checks fetched repository branches and requires matching `GITHUB_REF`, `GITHUB_SHA`, repository, run ID and attempt. A local bundle is not accepted for GHA publishing. Local GitHub release publishing is not supported.
+Local mode derives project/version/commit from the checkout and the expected tag from the version. `--project PATH` selects another checkout; `--tag` is local-only and must identify the same existing canonical tag pointing to HEAD. Local mode checks local branches without fetching. GHA checks fetched repository branches and requires matching `GITHUB_REF`, `GITHUB_SHA`, repository, run ID and attempt. Local package preflight uses only local Git HEAD as its expected commit; policy and notes come from the bundle. A local bundle is not accepted for GHA publishing. Local GitHub release publishing is not supported.
 
 Builds run directly from the checkout with the project's configured backend. Build-dependency isolation and the frontend's default sdist-then-wheel behavior remain enabled. Backend-generated files such as build/ or egg-info should be ignored by the client project's Git rules. Nopt neither copies the source tree nor excludes directories itself.
 
 For optional TestPyPI username suffixing, eligibility checks run first against the original project name. Nopt saves the raw pyproject.toml bytes, parses with tomllib, changes project.name and writes temporary TOML using tomli-w. The temporary file may lose comments and formatting. After the build, finally cleanup restores the exact original bytes in both local and GHA modes, including when rewriting or building fails. Pre-existing uncommitted edits are preserved; nopt does not reset the file to HEAD. Other backend-generated checkout files remain the client's responsibility.
 
-Static project.name is still required, but alternate valid TOML spellings such as quoted tables/keys or dotted keys are supported. No staging copy is made, and import names remain unchanged. Later commands independently derive the same effective name from the original project.name and configured suffix. The package-publishing preflight reads configuration from its fresh checkout; GitHub publication uses the original configuration recorded in the verified bundle.
+Static project.name is still required, but alternate valid TOML spellings such as quoted tables/keys or dotted keys are supported. No staging copy is made, and import names remain unchanged. Later commands independently derive the same effective name from the original project.name and configured suffix. Both publishing commands read configuration from the original pyproject.toml stored in the verified bundle. Each invocation applies only its own CLI overrides; overrides are never carried between steps. Overrides must be compatible with the saved distribution name and available release notes; publishing never rebuilds or regenerates missing content.
 
 Output must be a new directory; if it is inside the checkout, it must be Git-ignored. Add release-bundle/ to .gitignore to use the default output path.
 
-The bundle contains `dist/` (wheel + sdist), optional `notes.md`, `release.json` and standard `SHA256SUMS`. `notes.md` holds the extracted changelog section used as the GitHub release body, so publication uses the same checked text as the build. Manifest hash keys are relative to the bundle root. Release identity binds original hashes, resolved policy, source commit/tag and pre-build dirty status, and GHA run identity when available. SHA256SUMS includes release.json; the GitHub artifact/run identity supplies the workflow trust boundary. Checksums alone are not signatures. The package does not inspect generated runtime `_version.py` or require setuptools-git-metadata.
+The bundle contains `dist/` (wheel + sdist), the original `pyproject.toml`, optional `release-notes.md`, `release.json` and standard `SHA256SUMS`. `release-notes.md` holds the extracted changelog section used as the GitHub release body, so publication uses the same checked text as the build. Manifest hash keys are relative to the bundle root. Release identity binds original hashes, actual distribution identity, source commit/tag and pre-build dirty status, and GHA run identity when available. It does not save resolved configuration or CLI overrides. SHA256SUMS includes release.json; the GitHub artifact/run identity supplies the workflow trust boundary. Checksums alone are not signatures. The package does not inspect generated runtime `_version.py` or require setuptools-git-metadata.
+
+Both GHA publishing jobs consume the bundle without a source checkout. Source dirty, branch and changelog checks and artifact metadata inspection are completed before bundling. Publishing checks bundle integrity and expected identity, then repeats only mutable external checks: existing index/release records, live tag refs, uploaded filenames/hashes and latest-final tag ranking. Local GitHub-release bundle acquisition remains deferred.
 
 ### Generate a workflow
 

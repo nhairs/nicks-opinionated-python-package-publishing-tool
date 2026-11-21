@@ -21,15 +21,15 @@ from .config import Config, load
 from .source import Context, ContextData, SourceIdentity
 from .project import rename_distribution
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 1
 
 
 class ReleaseManifest(TypedDict):
-    """Verified metadata binding release identity, source and original bundle files."""
+    """Verified metadata binding release identity, source and original release bundle files."""
 
     schema_version: int
     source: SourceIdentity
-    distribution: str
+    distribution_name: str
     context: ContextData
     files: dict[str, str]
 
@@ -43,7 +43,11 @@ def sha256(path: Path) -> str:
 def validate_artifacts(
     directory: Path, name: str, version: str
 ) -> dict[str, str]:  # pylint: disable=too-many-locals
-    """Validate exact wheel/sdist identity, metadata and pure-Python wheel tags."""
+    """Validate exact wheel/sdist identity and metadata.
+
+    Returns:
+        A mapping from artifact filenames to their SHA256 sums.
+    """
     files = sorted(directory.iterdir())
     wheels = [p for p in files if p.name.endswith(".whl")]
     sdists = [p for p in files if p.name.endswith(".tar.gz")]
@@ -53,9 +57,7 @@ def validate_artifacts(
         if path.is_symlink() or not path.is_file():
             raise ValueError("distribution must be a regular file")
         if path in wheels:
-            dist, parsed, _, tags = parse_wheel_filename(path.name)
-            if any(tag.abi != "none" or tag.platform != "any" for tag in tags):
-                raise ValueError("v1 requires a pure-Python wheel")
+            dist, parsed, _, _ = parse_wheel_filename(path.name)
             with zipfile.ZipFile(path) as archive:
                 members = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
                 if len(members) != 1:
@@ -75,6 +77,8 @@ def validate_artifacts(
                 if stream is None:
                     raise ValueError("missing PKG-INFO")
                 metadata = BytesParser().parsebytes(stream.read())
+        # Catch backend output for a different project/version (for example, stale
+        # backend version configuration or a backend that ignores the temporary name).
         if canonicalize_name(name) != dist or str(parsed) != version:
             raise ValueError("distribution filename disagrees with release identity")
         if (
@@ -85,43 +89,46 @@ def validate_artifacts(
     return {path.name: sha256(path) for path in sorted(files)}
 
 
-def validate_output(root: Path, destination: Path) -> Path:
+def validate_build_output_path(project_path: Path, release_bundle_path: Path) -> None:
     """Validate build output location without creating it."""
-    destination = destination.resolve()
-    if destination.exists():
-        raise ValueError("bundle output already exists; choose a new output path")
-    if destination.is_relative_to(root):
+    release_bundle_path = release_bundle_path.resolve()
+    if release_bundle_path.exists():
+        raise ValueError("release bundle output already exists; choose a new output path")
+    if release_bundle_path.is_relative_to(project_path):
         # Avoid making our own future output an untracked source input.
         ignored = subprocess.run(
-            ["git", "check-ignore", "-q", str(destination)], cwd=root, check=False
+            ["git", "check-ignore", "-q", str(release_bundle_path)], cwd=project_path, check=False
         )
         if ignored.returncode != 0:
-            raise ValueError("bundle output inside checkout must be Git-ignored")
-    return destination
+            raise ValueError("release bundle output inside checkout must be Git-ignored")
+    return
 
 
 # pylint: disable-next=too-many-locals,too-many-arguments,too-many-positional-arguments
-def make_bundle(
-    root: Path,
-    destination: Path,
+def build_release_bundle(
+    project_path: Path,
+    release_bundle_path: Path,
     config: Config,
     context: Context,
     source: SourceIdentity,
-    notes: str | None,
+    release_notes: str | None,
 ) -> ReleaseManifest:
-    """Build from the checkout and prepare a complete local release bundle."""
-    ### Build from the checkout after eligibility has been checked.
-    destination = validate_output(root, destination)
+    """Build a release bundle; the caller must first check source eligibility."""
+    ### The caller checks eligibility; this function builds and packages its inputs.
+    release_bundle_path = release_bundle_path.resolve()
+    validate_build_output_path(project_path, release_bundle_path)
     with tempfile.TemporaryDirectory() as temporary:
-        bundle = Path(temporary) / "bundle"
-        project_file = root / "pyproject.toml"
-        original = project_file.read_bytes()
-        renamed = config.repository == "testpypi" and config.distribution != config.name
-        distributions = bundle / "dist"
+        release_bundle = Path(temporary) / "release_bundle"
+        project_file = project_path / "pyproject.toml"
+        original_pyproject_bytes = project_file.read_bytes()
+        requires_testpypi_rename = (
+            config.repository == "testpypi" and config.distribution_name != config.name
+        )
+        distributions = release_bundle / "dist"
         try:
-            if renamed:
-                # Eligibility is checked before the temporary name/formatting changes.
-                rename_distribution(project_file, config.distribution)
+            if requires_testpypi_rename:
+                # Change only build-time distribution identity, restoring the source below.
+                rename_distribution(project_file, config.distribution_name)
             subprocess.run(
                 [
                     sys.executable,
@@ -130,95 +137,115 @@ def make_bundle(
                     "--installer=uv",
                     "--outdir",
                     str(distributions),
-                    str(root),
+                    str(project_path),
                 ],
                 check=True,
             )
         finally:
             # Restore original comments, formatting and pre-existing uncommitted edits.
-            if renamed:
-                project_file.write_bytes(original)
+            if requires_testpypi_rename:
+                project_file.write_bytes(original_pyproject_bytes)
         ### Validate artifacts and bind them to the original project configuration.
         hashes = {
             "dist/" + name: digest
             for name, digest in validate_artifacts(
-                distributions, config.distribution, config.version
+                distributions, config.distribution_name, config.version
             ).items()
         }
-        (bundle / "pyproject.toml").write_bytes(original)
-        hashes["pyproject.toml"] = sha256(bundle / "pyproject.toml")
-        if notes is not None:
-            (bundle / "release-notes.md").write_text(notes, encoding="utf-8")
-            hashes["release-notes.md"] = sha256(bundle / "release-notes.md")
-        data: ReleaseManifest = {
+        # Preserve original configuration, not the temporary TestPyPI build name.
+        # Publishing derives the same effective name without rebuilding distributions.
+        (release_bundle / "pyproject.toml").write_bytes(original_pyproject_bytes)
+        hashes["pyproject.toml"] = sha256(release_bundle / "pyproject.toml")
+        if release_notes is not None:
+            (release_bundle / "release-notes.md").write_text(release_notes, encoding="utf-8")
+            hashes["release-notes.md"] = sha256(release_bundle / "release-notes.md")
+        manifest: ReleaseManifest = {
             "schema_version": _SCHEMA_VERSION,
             "source": source,
-            "distribution": config.distribution,
+            "distribution_name": config.distribution_name,
             "context": cast(ContextData, asdict(context)),
             "files": hashes,
         }
-        (bundle / "release.json").write_text(
-            json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        (release_bundle / "release.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        ### Preserve checksum text and original bytes in the final local bundle.
-        checksums = dict(data["files"])
-        checksums["release.json"] = sha256(bundle / "release.json")
-        (bundle / "SHA256SUMS").write_text(
+        ### Preserve checksum text and original bytes in the final local release bundle.
+        checksums = dict(manifest["files"])
+        checksums["release.json"] = sha256(release_bundle / "release.json")
+        (release_bundle / "SHA256SUMS").write_text(
             "".join(f"{digest}  {name}\n" for name, digest in sorted(checksums.items())),
             encoding="utf-8",
         )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(bundle, destination)
-    return data
+        release_bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(release_bundle, release_bundle_path)
+    return manifest
 
 
 # pylint: disable-next=too-many-branches,too-many-locals,too-many-statements
-def read_bundle(
-    root: Path, overrides: Mapping[str, object] | None = None
+def read_and_verify_release_bundle(
+    release_bundle: Path, overrides: Mapping[str, object] | None = None
 ) -> tuple[ReleaseManifest, Config]:
     """Verify every byte and narrow decoded release metadata before using it."""
-    ### Verify checksums and reject paths outside the original bundle.
-    root = root.resolve()
-    if (root / "SHA256SUMS").is_symlink():
+    ### Verify checksums and reject paths outside the original release bundle.
+    release_bundle = release_bundle.resolve()
+    if (release_bundle / "SHA256SUMS").is_symlink():
         raise ValueError("SHA256SUMS must be a regular file")
     checksums: dict[str, str] = {}
-    for line in (root / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+    for line in (release_bundle / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
         match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
         if not match:
             raise ValueError("invalid SHA256SUMS")
         digest, name = match.groups()
         if name in checksums or name.startswith("/") or "\\" in name or ".." in Path(name).parts:
-            raise ValueError("unsafe or duplicate bundle path")
-        path = root / name
-        if not path.resolve().is_relative_to(root) or path.is_symlink() or not path.is_file():
-            raise ValueError("bundle entry must be a regular file inside bundle")
+            raise ValueError("unsafe or duplicate release bundle path")
+        path = release_bundle / name
+        if (
+            not path.resolve().is_relative_to(release_bundle)
+            or path.is_symlink()
+            or not path.is_file()
+        ):
+            raise ValueError("release bundle entry must be a regular file inside release bundle")
         if sha256(path) != digest:
-            raise ValueError(f"bundle checksum mismatch: {name}")
+            raise ValueError(f"release bundle checksum mismatch: {name}")
         checksums[name] = digest
     actual = {
-        path.relative_to(root).as_posix()
-        for path in root.rglob("*")
+        path.relative_to(release_bundle).as_posix()
+        for path in release_bundle.rglob("*")
         if path.is_file() or path.is_symlink()
     }
-    if actual != set(checksums) | {"SHA256SUMS"} or "release.json" not in checksums:
-        raise ValueError("bundle file set disagrees with SHA256SUMS")
+    # The loop checks listed files; this inventory also detects unlisted additions,
+    # such as an extra wheel or temporary file copied into a downloaded artifact.
+    unexpected_files = actual - (set(checksums) | {"SHA256SUMS"})
+    missing_files = (set(checksums) | {"SHA256SUMS"}) - actual
+    if unexpected_files or missing_files:
+        raise ValueError(
+            "release bundle file set disagrees with SHA256SUMS: "
+            f"unexpected={sorted(unexpected_files)}, missing={sorted(missing_files)}"
+        )
+    if "release.json" not in checksums:
+        raise ValueError("release.json must be listed in SHA256SUMS")
 
     ### Narrow untrusted JSON to the schema's configuration and identity fields.
-    decoded: object = json.loads((root / "release.json").read_text(encoding="utf-8"))
+    decoded: object = json.loads((release_bundle / "release.json").read_text(encoding="utf-8"))
     if not isinstance(decoded, dict):
         raise ValueError("release manifest must be an object")
-    data = cast(dict[str, object], decoded)
-    schema = data.get("schema_version")
+    manifest_data = cast(dict[str, object], decoded)
+    schema = manifest_data.get("schema_version")
     if not isinstance(schema, int) or isinstance(schema, bool) or schema != _SCHEMA_VERSION:
         raise ValueError("unsupported release manifest schema")
     expected_files = {name: digest for name, digest in checksums.items() if name != "release.json"}
-    if data.get("files") != expected_files:
+    if manifest_data.get("files") != expected_files:
         raise ValueError("release manifest disagrees with checksums")
-    config = load(root, overrides)
-    distribution = data.get("distribution")
-    if not isinstance(distribution, str) or distribution != config.distribution:
-        raise ValueError("bundle distribution disagrees with this invocation configuration")
-    source_data = data.get("source")
+    # Re-read project policy from the bundled TOML for this invocation only.
+    config = load(release_bundle, overrides)
+    distribution_name = manifest_data.get("distribution_name")
+    if not isinstance(distribution_name, str) or distribution_name != config.distribution_name:
+        raise ValueError(
+            "release bundle distribution name disagrees with this invocation configuration"
+        )
+
+    # Validate recorded source identity without repeating checkout eligibility checks.
+    source_data = manifest_data.get("source")
     if not isinstance(source_data, dict):
         raise ValueError("release source identity must be an object")
     commit = source_data.get("commit")
@@ -228,7 +255,9 @@ def read_bundle(
         raise ValueError("invalid release source commit")
     if not isinstance(tag, str) or tag != "v" + config.version or not isinstance(dirty, bool):
         raise ValueError("invalid release tag or dirty status")
-    context_data = data.get("context")
+
+    # Execution identity is checked separately against the current publishing job.
+    context_data = manifest_data.get("context")
     if not isinstance(context_data, dict) or set(context_data) != {
         field.name for field in fields(Context)
     }:
@@ -240,7 +269,7 @@ def read_bundle(
     ):
         raise ValueError("invalid release execution context values")
 
-    ### Trust build-time metadata checks; verify only the checked bundle layout here.
+    ### Trust build-time metadata checks; verify only the checked release bundle layout here.
     artifact_files = {name for name in expected_files if name.startswith("dist/")}
     if (
         len(artifact_files) != 2
@@ -248,16 +277,18 @@ def read_bundle(
         or sum(name.endswith(".tar.gz") for name in artifact_files) != 1
         or any(Path(name).parent.as_posix() != "dist" for name in artifact_files)
     ):
-        raise ValueError("bundle must contain exactly one wheel and one sdist under dist/")
+        raise ValueError("release bundle must contain exactly one wheel and one sdist under dist/")
     allowed_files = artifact_files | {"pyproject.toml"}
     if "release-notes.md" in expected_files:
         allowed_files.add("release-notes.md")
-    if set(expected_files) != allowed_files:
-        raise ValueError("unexpected release bundle member")
+    if unexpected_files := set(expected_files) - allowed_files:
+        raise ValueError(f"unexpected release bundle members: {sorted(unexpected_files)}")
+    if missing_files := allowed_files - set(expected_files):
+        raise ValueError(f"missing release bundle members: {sorted(missing_files)}")
     manifest: ReleaseManifest = {
         "schema_version": schema,
         "source": {"commit": commit, "tag": tag, "dirty": dirty},
-        "distribution": distribution,
+        "distribution_name": distribution_name,
         "context": cast(ContextData, context_data),
         "files": expected_files,
     }

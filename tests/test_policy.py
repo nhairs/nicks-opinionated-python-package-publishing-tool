@@ -6,7 +6,7 @@ import tomllib
 import pytest
 
 from nopt.changelog import release_notes
-from nopt.cli import overrides, parser
+from nopt.cli import get_cli_config_overrides, build_parser
 from nopt.config import Config, load, validate
 from nopt.remote import publication_matches
 from nopt.project import rename_distribution
@@ -25,7 +25,7 @@ from nopt.project import rename_distribution
 def test_versions(version: str, group: str) -> None:
     """Accept canonical version forms and classify their release groups."""
     config = validate(Config("fixture", version))
-    assert config.group == group
+    assert config.release_type == group
     return
 
 
@@ -56,7 +56,7 @@ def test_rejected_versions(version: str) -> None:
 
 def test_defaults_and_explicit_false(project: Path) -> None:
     """Preserve explicit CLI false and empty values ahead of configuration defaults."""
-    args = parser().parse_args(
+    args = build_parser().parse_args(
         [
             "build",
             "--local",
@@ -66,12 +66,12 @@ def test_defaults_and_explicit_false(project: Path) -> None:
             "--no-pre-release-branches",
         ]
     )
-    config = load(project, overrides(args))
+    config = load(project, get_cli_config_overrides(args))
     assert config.changelog is False
     assert config.github_release_publish is False
     assert config.pre_release_branches is False
     assert config.allow_dirty == ()
-    assert overrides(parser().parse_args(["build", "--local"])) == {}
+    assert get_cli_config_overrides(build_parser().parse_args(["build", "--local"])) == {}
     return
 
 
@@ -180,4 +180,19 @@ def test_nonfinal_requires_unreleased(project: Path, version: str) -> None:
     path.write_text("## [1.2.3] - 2026-11-15\n\n- Change\n", encoding="utf-8")
     with pytest.raises(ValueError, match="UNRELEASED"):
         release_notes(project, replace(load(project), version=version))
+    return
+
+
+@pytest.mark.parametrize(
+    "original,new_name",
+    [("", "valid-name"), ("   ", "valid-name"), ("valid-name", ""), ("valid-name", "   ")],
+)
+def test_testpypi_rename_rejects_empty_names(tmp_path: Path, original: str, new_name: str) -> None:
+    """Refuse empty names before altering the checkout TOML."""
+    path = tmp_path / "pyproject.toml"
+    source = f'[project]\nname = "{original}"\nversion = "1.2.3"\n'.encode()
+    path.write_bytes(source)
+    with pytest.raises(ValueError, match="static project.name"):
+        rename_distribution(path, new_name)
+    assert path.read_bytes() == source
     return

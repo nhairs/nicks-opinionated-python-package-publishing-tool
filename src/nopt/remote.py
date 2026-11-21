@@ -14,14 +14,14 @@ from .config import parse_version
 from .source import is_latest_final
 
 
-def decode_response(raw: bytes) -> object:
+def decode_response(raw: bytes) -> dict[str, object] | list[object]:
     """Decode a successful JSON response without confusing empty/null with HTTP 404."""
     try:
         decoded: object = json.loads(raw)
     except ValueError:
         raise ValueError("successful API response must contain valid JSON") from None
-    if decoded is None:
-        raise ValueError("successful API response must not contain JSON null")
+    if not isinstance(decoded, (dict, list)):
+        raise ValueError("successful API response must contain a JSON object or array")
     return decoded
 
 

@@ -6,8 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "nopt"
 version = "0.1.0.dev0"
 description = "Nicks Opinionated (Python Package) Publishing Tool"
-requires-python = ">=3.11.4"
-authors = [{name = "Nicholas Hairs"}]
+requires-python = ">=3.11"
+authors = [{name = "Nicholas Hairs", email = "info+nopt@nicholashairs.com"}]
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENCE"]

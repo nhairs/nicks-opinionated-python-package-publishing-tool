@@ -3,16 +3,25 @@
 from dataclasses import replace
 from pathlib import Path
 import json
+from importlib.metadata import version
+import io
+import tarfile
+import zipfile
 import subprocess
 import sys
 
 import pytest
 
-from nopt.bundle import make_bundle, read_bundle, sha256, validate_artifacts
+from nopt.bundle import (
+    build_release_bundle,
+    read_and_verify_release_bundle,
+    sha256,
+    validate_artifacts,
+)
 from nopt.changelog import release_notes
 from nopt.config import load
 from nopt.source import Context, identity
-from nopt.cli import check_bundle_context, check_publish_bundle, context, main, parser
+from nopt.cli import check_bundle_context, check_publish_bundle, build_context, main, build_parser
 
 
 @pytest.mark.parametrize("backend", ["setuptools", "hatchling"])
@@ -42,7 +51,7 @@ def test_checkout_build_and_bundle(
     original_bytes = (project / "pyproject.toml").read_bytes()
     original_pyproject = original_bytes.decode("utf-8")
     destination = tmp_path / "bundle"
-    data = make_bundle(
+    data = build_release_bundle(
         project, destination, config, context, source, release_notes(project, config)
     )
     assert (project / "pyproject.toml").read_bytes() == original_bytes
@@ -58,10 +67,10 @@ def test_checkout_build_and_bundle(
     policy = {"repository": target, **({"testpypi_username": "alice"} if suffix else {})}
     if suffix:
         with pytest.raises(ValueError, match="invocation configuration"):
-            read_bundle(destination)
-    verified, resolved = read_bundle(destination, policy)
+            read_and_verify_release_bundle(destination)
+    verified, resolved = read_and_verify_release_bundle(destination, policy)
     assert verified == data
-    assert resolved.distribution == config.distribution
+    assert resolved.distribution_name == config.distribution_name
     assert resolved.name == "fixture-package"
     # A later command uses a fresh checkout's original project name/configuration.
     fresh = tmp_path / "publishing-checkout"
@@ -70,7 +79,7 @@ def test_checkout_build_and_bundle(
     fresh_config = load(
         fresh, {"repository": "testpypi", "testpypi_username": "alice"} if suffix else {}
     )
-    assert fresh_config.distribution == resolved.distribution
+    assert fresh_config.distribution_name == resolved.distribution_name
     wheel = next((destination / "dist").glob("*.whl"))
     # Import actual built Python from the wheel, independently of the source tree.
     ### Observe the built import as JSON, then check bundle tampering failures.
@@ -89,12 +98,12 @@ def test_checkout_build_and_bundle(
     assert observation["value"] == "original"
     unexpected = destination / "extra.txt"
     unexpected.write_text("extra", encoding="utf-8")
-    with pytest.raises(ValueError, match="file set"):
-        read_bundle(destination, policy)
+    with pytest.raises(ValueError, match="unexpected=.*extra.txt"):
+        read_and_verify_release_bundle(destination, policy)
     unexpected.unlink()
     (destination / "release-notes.md").write_text("tampered", encoding="utf-8")
     with pytest.raises(ValueError, match="checksum"):
-        read_bundle(destination, policy)
+        read_and_verify_release_bundle(destination, policy)
     return
 
 
@@ -123,13 +132,16 @@ def test_template_refuses_overwrite(tmp_path: Path) -> None:
     path = tmp_path / "release.yml"
     assert main(["workflow-template", "--output", str(path)]) == 0
     assert "<your CI goes here>" in path.read_text(encoding="utf-8")
-    assert main(["workflow-template", "--output", str(path)]) == 1
+    with pytest.raises(FileExistsError):
+        main(["workflow-template", "--output", str(path)])
     return
 
 
-def test_cli_requires_explicit_local_mode(project: Path) -> None:
+def test_cli_requires_explicit_local_mode(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Require explicit local mode outside a GitHub Actions release job."""
-    assert main(["ci-preflight", "--project", str(project)]) == 1
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    with pytest.raises(ValueError, match="--local"):
+        main(["ci-preflight", "--project", str(project)])
     return
 
 
@@ -140,18 +152,35 @@ def test_bundle_rejects_unsafe_paths(tmp_path: Path, entry: str) -> None:
     """Reject escaping or platform-ambiguous paths in bundle checksums."""
     (tmp_path / "SHA256SUMS").write_text("a" * 64 + "  " + entry + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="unsafe"):
-        read_bundle(tmp_path)
+        read_and_verify_release_bundle(tmp_path)
     return
 
 
-def test_artifact_set_and_native_wheel_rejected(tmp_path: Path) -> None:
-    """Reject incomplete artifact sets and native wheels in the pure-Python release flow."""
+def test_artifact_set_requires_wheel_and_sdist(tmp_path: Path) -> None:
+    """Reject incomplete artifact sets before reading archive metadata."""
     with pytest.raises(ValueError, match="exactly"):
         validate_artifacts(tmp_path, "fixture", "1.2.3")
-    (tmp_path / "fixture-1.2.3-cp313-cp313-linux_x86_64.whl").touch()
-    (tmp_path / "fixture-1.2.3.tar.gz").touch()
-    with pytest.raises(ValueError, match="pure-Python"):
-        validate_artifacts(tmp_path, "fixture", "1.2.3")
+    return
+
+
+@pytest.mark.parametrize("wheel_tag", ["py3-none-any", "cp313-cp313-linux_x86_64"])
+def test_artifact_metadata_for_pure_and_platform_wheels(tmp_path: Path, wheel_tag: str) -> None:
+    """Verify archive identity equally for platform and pure-Python wheel tags."""
+    metadata = b"Metadata-Version: 2.1\nName: fixture\nVersion: 1.2.3\n"
+    wheel = tmp_path / f"fixture-1.2.3-{wheel_tag}.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("fixture-1.2.3.dist-info/METADATA", metadata)
+    sdist = tmp_path / "fixture-1.2.3.tar.gz"
+    with tarfile.open(sdist, "w:gz") as archive:
+        member = tarfile.TarInfo("fixture-1.2.3/PKG-INFO")
+        member.size = len(metadata)
+        archive.addfile(member, io.BytesIO(metadata))
+    assert validate_artifacts(tmp_path, "fixture", "1.2.3") == {
+        wheel.name: sha256(wheel),
+        sdist.name: sha256(sdist),
+    }
+    with pytest.raises(ValueError, match="filename disagrees"):
+        validate_artifacts(tmp_path, "fixture", "9.9.9")
     return
 
 
@@ -159,7 +188,7 @@ def test_artifact_set_and_native_wheel_rejected(tmp_path: Path) -> None:
     "field,value",
     [
         ("schema_version", True),
-        ("distribution", []),
+        ("distribution_name", []),
         ("source", None),
         ("source", {"commit": None, "tag": "v1.2.3.dev4", "dirty": False}),
         ("source", {"commit": "a" * 41, "tag": "v1.2.3.dev4", "dirty": False}),
@@ -174,7 +203,7 @@ def test_bundle_rejects_malformed_metadata(
     config = load(project)
     bundle = tmp_path / "metadata-bundle"
     context = Context(True)
-    make_bundle(
+    build_release_bundle(
         project,
         bundle,
         config,
@@ -198,7 +227,7 @@ def test_bundle_rejects_malformed_metadata(
     )
     ### The invalid structure must fail at the metadata boundary.
     with pytest.raises(ValueError):
-        read_bundle(bundle)
+        read_and_verify_release_bundle(bundle)
     return
 
 
@@ -213,6 +242,10 @@ def test_failed_renamed_build_restores_original(
 from pathlib import Path
 from typing import NoReturn
 import json
+from importlib.metadata import version
+import io
+import tarfile
+import zipfile
 import tomllib
 
 
@@ -240,7 +273,7 @@ def build_sdist(sdist_directory: str, config_settings: dict[str, object] | None 
     destination = tmp_path / "failed-bundle"
     ### The original bytes must be restored even though the real build process fails.
     with pytest.raises(subprocess.CalledProcessError):
-        make_bundle(
+        build_release_bundle(
             project,
             destination,
             config,
@@ -272,12 +305,12 @@ def test_gha_tag_comes_only_from_environment(
     arguments = ["ci-preflight"]
     if explicit_tag is not None:
         arguments.extend(["--tag", explicit_tag])
-    args = parser().parse_args(arguments)
+    args = build_parser().parse_args(arguments)
     if explicit_tag is None:
-        assert context(args).tag == "v1.2.3.dev4"
+        assert build_context(args).tag == "v1.2.3.dev4"
     else:
         with pytest.raises(ValueError, match="local-only"):
-            context(args)
+            build_context(args)
     return
 
 
@@ -294,7 +327,7 @@ def test_publish_bundle_needs_no_checkout(
     source = identity(project, config, Context(True))
     original = (project / "pyproject.toml").read_bytes()
     bundle = tmp_path / "bundle"
-    make_bundle(
+    build_release_bundle(
         project,
         bundle,
         replace(config, github_release_publish=False),
@@ -330,4 +363,23 @@ def test_publish_bundle_needs_no_checkout(
     (bundle / "pyproject.toml").write_bytes(original + b"# edited\n")
     with pytest.raises(ValueError, match="checksum"):
         check_publish_bundle(bundle, execution, source["commit"])
+    return
+
+
+@pytest.mark.parametrize("option", ["--help", "--version"])
+def test_cli_information_needs_no_project(tmp_path: Path, option: str) -> None:
+    """Expose program identity without requiring checkout, bundle or GHA context."""
+    result = subprocess.run(
+        [sys.executable, "-m", "nopt", option],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if option == "--help":
+        assert "Nicks Opinionated" in result.stdout
+        assert "Copyright (c) 2026 Nicholas Hairs" in result.stdout
+        assert "github.com/nhairs/nicks-opinionated-python-package-publishing-tool" in result.stdout
+    else:
+        assert result.stdout.strip() == f"nopt {version('nopt')}"
     return

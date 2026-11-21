@@ -3,27 +3,36 @@
 import argparse
 from collections.abc import Mapping
 from importlib.resources import files
+from importlib.metadata import version
 import json
 import os
 from pathlib import Path
 import re
-import subprocess
-import sys
-import tarfile
-import zipfile
-from urllib.error import URLError
 
-from .bundle import ReleaseManifest, make_bundle, read_bundle, validate_output
-from .changelog import release_notes
+from .bundle import (
+    ReleaseManifest,
+    build_release_bundle,
+    read_and_verify_release_bundle,
+    validate_build_output_path,
+)
+from .changelog import release_notes as extract_release_notes
 from .config import Config, load
 from .remote import GitHubClient, PyPIClient
 from .source import Context, SourceIdentity, git, identity
 
 
-def parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
     """Build the agreed small CLI without speculative skip/force flags."""
-    result = argparse.ArgumentParser(prog="nopt")
-    commands = result.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="nopt",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Nicks Opinionated (Python Package) Publishing Tool: "
+        "check, build and publish releases.",
+        epilog="Copyright (c) 2026 Nicholas Hairs.\n"
+        "https://github.com/nhairs/nicks-opinionated-python-package-publishing-tool",
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {version('nopt')}")
+    commands = parser.add_subparsers(dest="command", required=True)
     ### Release workflow commands share policy overrides and explicit execution mode.
     for name, help_text in (
         ("ci-preflight", "Check source release eligibility before user CI"),
@@ -64,7 +73,11 @@ def parser() -> argparse.ArgumentParser:
             )
         if name in {"publish-release-preflight", "publish-github-release"}:
             command.add_argument(
-                "--bundle", type=Path, required=True, help="original downloaded release bundle"
+                "--bundle",
+                dest="release_bundle",
+                type=Path,
+                required=True,
+                help="original downloaded release bundle",
             )
         command.add_argument("--repository", choices=("pypi", "testpypi"), default=None)
         command.add_argument("--testpypi-username")
@@ -100,10 +113,10 @@ def parser() -> argparse.ArgumentParser:
         "workflow-template", help="Print or write an editable GHA release workflow"
     )
     template.add_argument("--output", type=Path, help="new file; never overwrite an existing file")
-    return result
+    return parser
 
 
-def context(args: argparse.Namespace) -> Context:
+def build_context(args: argparse.Namespace) -> Context:
     """Require GHA identity unless the caller explicitly selects local mode."""
     if getattr(args, "local", False):
         return Context(True, args.tag)
@@ -124,7 +137,7 @@ def context(args: argparse.Namespace) -> Context:
     return Context(False, tag, repository, run_id, attempt)
 
 
-def overrides(args: argparse.Namespace) -> dict[str, object]:
+def get_cli_config_overrides(args: argparse.Namespace) -> dict[str, object]:
     """Only explicitly supplied options override TOML."""
     keys = (
         "repository",
@@ -144,16 +157,16 @@ def check_source(
     root: Path, config: Config, execution: Context, index: PyPIClient, github: GitHubClient
 ) -> tuple[SourceIdentity, str | None]:
     """Refuse an existing index version before tag/GitHub diagnostics."""
-    index.absent(config.repository, config.distribution, config.version)
+    index.absent(config.repository, config.distribution_name, config.version)
     source = identity(root, config, execution)
-    notes = release_notes(root, config)
+    release_notes = extract_release_notes(root, config)
     if not execution.local:
         if os.environ.get("GITHUB_SHA") != source["commit"]:
             raise ValueError("HEAD disagrees with GITHUB_SHA")
         github.check_tag(source["tag"], source["commit"])
-        if config.github_requested:
+        if config.github_release_requested:
             github.release_absent(source["tag"])
-    return source, notes
+    return source, release_notes
 
 
 def check_bundle_context(data: Mapping[str, object], execution: Context) -> None:
@@ -172,10 +185,13 @@ def check_bundle_context(data: Mapping[str, object], execution: Context) -> None
 
 
 def check_publish_bundle(
-    bundle: Path, execution: Context, commit: str, policy: Mapping[str, object] | None = None
+    release_bundle: Path,
+    execution: Context,
+    commit: str,
+    policy: Mapping[str, object] | None = None,
 ) -> tuple[ReleaseManifest, Config]:
     """Verify the checked build handoff against independently supplied identity."""
-    data, config = read_bundle(bundle, policy)
+    data, config = read_and_verify_release_bundle(release_bundle, policy)
     check_bundle_context(data, execution)
     if data["source"]["commit"] != commit:
         raise ValueError("bundle source disagrees with current commit")
@@ -193,17 +209,19 @@ def publish_preflight(
         if execution.local
         else os.environ.get("GITHUB_SHA", "")
     )
-    data, config = check_publish_bundle(args.bundle, execution, commit, overrides(args))
-    index.absent(config.repository, config.distribution, config.version)
+    data, config = check_publish_bundle(
+        args.release_bundle, execution, commit, get_cli_config_overrides(args)
+    )
+    index.absent(config.repository, config.distribution_name, config.version)
     if not execution.local:
         github.check_tag(data["source"]["tag"], data["source"]["commit"])
-        if config.github_requested:
+        if config.github_release_requested:
             github.release_absent(data["source"]["tag"])
     return {
         "version": config.version,
-        "distribution": config.distribution,
+        "distribution_name": config.distribution_name,
         "tag": data["source"]["tag"],
-        "github_requested": config.github_requested,
+        "github_release_requested": config.github_release_requested,
     }
 
 
@@ -213,9 +231,12 @@ def publish_github(
     """Gate announcement on exact index bytes; existing releases always fail."""
     ### Validate the original bundle and workflow identity before network checks.
     data, config = check_publish_bundle(
-        args.bundle, execution, os.environ.get("GITHUB_SHA", ""), overrides(args)
+        args.release_bundle,
+        execution,
+        os.environ.get("GITHUB_SHA", ""),
+        get_cli_config_overrides(args),
     )
-    if not config.github_requested:
+    if not config.github_release_requested:
         return {"github_release": "skipped"}
     github.check_tag(data["source"]["tag"], data["source"]["commit"])
     github.release_absent(data["source"]["tag"])
@@ -225,15 +246,15 @@ def publish_github(
         if name.startswith("dist/")
     }
     ### Gate GitHub publication on exact index filenames and hashes.
-    index.verify_index(config.repository, config.distribution, config.version, expected)
+    index.verify_index(config.repository, config.distribution_name, config.version, expected)
     # Recheck tag and existence after bounded metadata waiting.
     github.check_tag(data["source"]["tag"], data["source"]["commit"])
     github.release_absent(data["source"]["tag"])
     latest = github.is_latest_final(config.version)
     if args.check_only:
         return {"checked": "publish-github-release", "latest": latest}
-    notes = (
-        (args.bundle / "release-notes.md").read_text(encoding="utf-8")
+    release_notes = (
+        (args.release_bundle / "release-notes.md").read_text(encoding="utf-8")
         if config.changelog is not False
         else ""
     )
@@ -245,9 +266,9 @@ def publish_github(
             "tag_name": data["source"]["tag"],
             "target_commitish": data["source"]["commit"],
             "name": data["source"]["tag"],
-            "body": notes,
+            "body": release_notes,
             "draft": False,
-            "prerelease": config.group != "final",
+            "prerelease": config.release_type != "final",
             "make_latest": "true" if latest else "false",
         },
     )
@@ -260,7 +281,7 @@ def publish_github(
     if not isinstance(release_url, str):
         raise ValueError("GitHub did not return a release URL")
     ### Attach only the verified original files.
-    assets = [p for p in args.bundle.rglob("*") if p.is_file()]
+    assets = [p for p in args.release_bundle.rglob("*") if p.is_file()]
     for path in sorted(assets):
         github.upload_asset(release_id, path)
     return {"github_release": release_url, "assets": len(assets)}
@@ -277,25 +298,25 @@ def execute(args: argparse.Namespace) -> dict[str, str | int | bool]:
             return {"workflow": str(args.output)}
         print(content, end="")
         return {}
-    execution = context(args)
+    execution = build_context(args)
     github = GitHubClient(execution.github_repository)
     if args.command == "publish-github-release":
         return publish_github(args, execution, PyPIClient(), github)
     if args.command == "publish-release-preflight":
         return publish_preflight(args, execution, PyPIClient(), github)
     root = args.project.resolve()
-    config = load(root, overrides(args))
-    source, notes = check_source(root, config, execution, PyPIClient(), github)
+    config = load(root, get_cli_config_overrides(args))
+    source, release_notes = check_source(root, config, execution, PyPIClient(), github)
     result: dict[str, str | int | bool] = {
         "version": config.version,
-        "distribution": config.distribution,
+        "distribution_name": config.distribution_name,
         "tag": source["tag"],
-        "github_requested": config.github_requested,
+        "github_release_requested": config.github_release_requested,
     }
     if args.command == "build":
-        validate_output(root, args.output)
+        validate_build_output_path(root, args.output)
     if args.command == "build" and not args.check_only:
-        make_bundle(root, args.output, config, execution, source, notes)
+        build_release_bundle(root, args.output, config, execution, source, release_notes)
         result["bundle"] = str(args.output.resolve())
     output = os.environ.get("GITHUB_OUTPUT") if not execution.local else None
     if output:
@@ -306,22 +327,9 @@ def execute(args: argparse.Namespace) -> dict[str, str | int | bool]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Render clean diagnostics and return a failing status without leaking credentials."""
-    args = parser().parse_args(argv)
-    try:
-        result = execute(args)
-    except (
-        ValueError,
-        OSError,
-        KeyError,
-        TypeError,
-        subprocess.SubprocessError,
-        tarfile.TarError,
-        zipfile.BadZipFile,
-        URLError,
-    ) as error:
-        print(f"nopt: {error}", file=sys.stderr)
-        return 1
+    """Run the CLI and preserve exception tracebacks for failures."""
+    args = build_parser().parse_args(argv)
+    result = execute(args)
     if result:
         print(json.dumps(result, sort_keys=True))
     return 0

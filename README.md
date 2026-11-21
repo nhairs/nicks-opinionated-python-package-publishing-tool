@@ -2,7 +2,7 @@
 
 `nopt` checks Python release eligibility, builds a verified release bundle and optionally publishes a GitHub release. GitHub Actions handles CI, approvals and artifact storage; the PyPA publishing action uploads distributions to PyPI or TestPyPI.
 
-This initial implementation requires Python 3.11.4+ and a Python project in a Git checkout. Any PEP 517 build backend supported by python-build can be used. It supports one pure-Python wheel plus one source distribution. There is no PyPI upload command.
+This initial implementation requires Python 3.11+ and a Python project in a Git checkout. Any PEP 517 build backend supported by python-build can be used. It supports one wheel plus one source distribution. There is no PyPI upload command.
 
 ## Install
 
@@ -13,7 +13,7 @@ python -m pip install .
 nopt --help
 ```
 
-The project has not been published to PyPI. Workflow templates install nopt from its Git repository; pin that requirement and action references to reviewed immutable revisions before enabling production publishing.
+The project has not been published to PyPI. Workflow templates install nopt from its Git repository; pin that requirement and review the pinned action references before enabling production publishing.
 
 ## Configure a project
 
@@ -111,7 +111,7 @@ The command refuses to overwrite an existing file. Without `--output`, it prints
 
 Before enabling publication:
 
-- Pin tool/action revisions and review the workflow.
+- Pin the tool requirement and review action revisions. Repository-based action references are already pinned as `name@sha # version`.
 - Configure the `pypi` GitHub environment and approvals.
 - Register the repository/workflow/environment as a PyPI Trusted Publisher.
 - For TestPyPI, set `repository = "testpypi"`, use the TestPyPI environment/publisher, and set the publishing action's TestPyPI upload URL.
@@ -133,3 +133,21 @@ uvx tox
 ```
 
 CI runs tox with tox-uv on Linux, macOS and Windows for CPython 3.11–3.15 and PyPy 3.11–3.12. Integration tests use real local Git repositories and isolated wheel/sdist builds. Build tests exercise both setuptools and Hatchling, with and without TestPyPI name rewriting. No tests perform package publication, create GitHub releases or change remote settings.
+
+
+### Update action pins
+
+The weekly or manually dispatched `update-action-pins.yml` workflow runs Renovate.
+It covers this repository's workflows and the shipped `src/nopt/workflow.yml`
+template, updating commit pins and their version comments through reviewable PRs.
+It does not merge updates automatically. Configure a `RENOVATE_TOKEN` repository
+secret with access to create branches/PRs and update workflow files; the workflow
+reports a missing secret rather than silently skipping updates. No credentials or
+repository settings are configured by nopt.
+
+After the initial nopt publication, change the template's tool installation/commands
+to `uvx nopt ...`; until then it installs from Git. This migration remains TODO.
+
+CLI failures propagate their exceptions and tracebacks; successful commands return
+JSON where applicable. `nopt --help` describes the commands and `nopt --version`
+reports the installed distribution version.

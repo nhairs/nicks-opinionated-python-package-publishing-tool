@@ -5,6 +5,7 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 import re
 import tomllib
+from typing import Literal
 
 from packaging.utils import canonicalize_name
 from packaging.version import Version
@@ -31,12 +32,12 @@ class Config:  # pylint: disable=too-many-instance-attributes
 
     name: str
     version: str
-    changelog: str | bool = "docs/changelog.md"
+    changelog: str | Literal[False] = "docs/changelog.md"
     repository: str = "pypi"
     allow_dirty: tuple[str, ...] = ("dev",)
-    final_release_branches: tuple[str, ...] | bool = ("main",)
-    pre_release_branches: tuple[str, ...] | bool = ("main",)
-    dev_release_branches: tuple[str, ...] | bool = False
+    final_release_branches: tuple[str, ...] = ("main",)
+    pre_release_branches: tuple[str, ...] | Literal[False] = ("main",)
+    dev_release_branches: tuple[str, ...] | Literal[False] = False
     testpypi_username: str | None = None
     github_release_publish: bool = True
     github_release_types: tuple[str, ...] = ("pre", "final")
@@ -52,25 +53,25 @@ class Config:  # pylint: disable=too-many-instance-attributes
         if unknown := set(values) - allowed:
             raise ValueError(f"unknown configuration fields: {', '.join(sorted(unknown))}")
         policy = {key: value for key, value in values.items() if key not in {"name", "version"}}
-        return validate(replace(cls(name, version), **policy))
+        return validate(cls(name, version, **policy))
 
     @property
-    def group(self) -> str:
+    def release_type(self) -> str:
         """Classify the supported version subset."""
         parsed = Version(self.version)
         return "dev" if parsed.is_devrelease else "pre" if parsed.is_prerelease else "final"
 
     @property
-    def distribution(self) -> str:
+    def distribution_name(self) -> str:
         """Return the index-facing distribution name."""
         return (
             self.name if self.testpypi_username is None else f"{self.name}-{self.testpypi_username}"
         )
 
     @property
-    def github_requested(self) -> bool:
+    def github_release_requested(self) -> bool:
         """Return whether this release should be announced on GitHub."""
-        return self.github_release_publish and self.group in self.github_release_types
+        return self.github_release_publish and self.release_type in self.github_release_types
 
 
 def validate(config: Config) -> Config:  # pylint: disable=too-many-branches
@@ -125,7 +126,7 @@ def validate(config: Config) -> Config:  # pylint: disable=too-many-branches
             raise ValueError(
                 "testpypi-username must use lowercase letters, digits and single hyphens"
             )
-        canonicalize_name(config.distribution, validate=True)
+        canonicalize_name(config.distribution_name, validate=True)
     return replace(
         config,
         **{

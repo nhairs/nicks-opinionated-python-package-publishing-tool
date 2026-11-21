@@ -47,7 +47,7 @@ def git(root: Path, *args: str) -> str:
 
 def check_branches(root: Path, config: Config, context: Context, commit: str) -> None:
     """Require ancestry from any existing allowed branch, never branch-tip equality."""
-    branches = getattr(config, f"{config.group}_release_branches")
+    branches = getattr(config, f"{config.release_type}_release_branches")
     if branches is False:
         return
     for branch in branches:
@@ -85,8 +85,8 @@ def identity(root: Path, config: Config, context: Context) -> SourceIdentity:
         timeout=60,
     )
     dirty = bool(status)
-    if dirty and config.group not in config.allow_dirty:
-        raise ValueError(f"working tree is dirty; {config.group} is not in allow-dirty")
+    if dirty and config.release_type not in config.allow_dirty:
+        raise ValueError(f"working tree is dirty; {config.release_type} is not in allow-dirty")
     return {"commit": commit, "tag": tag, "dirty": dirty}
 
 

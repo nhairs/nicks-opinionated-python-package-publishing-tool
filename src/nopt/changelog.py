@@ -26,7 +26,7 @@ def release_notes(root: Path, config: Config) -> str | None:
         raise ValueError(f"expected exactly one changelog section for {base}")
     heading, _, content = matches[0].partition("\n")
     stamp = heading.rsplit(" - ", 1)[-1]
-    if config.group == "final":
+    if config.release_type == "final":
         if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", stamp):
             raise ValueError("final releases require a YYYY-MM-DD changelog date")
         date.fromisoformat(stamp)

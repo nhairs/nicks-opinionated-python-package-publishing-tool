@@ -17,7 +17,7 @@ The project has not been published to PyPI. Workflow templates install nopt from
 
 ## Configure a project
 
-Declare a static project name and version. This example shows all optional settings and their defaults, except `testpypi-username`, which has no default:
+Declare a static project name and version. This example shows the settings and their defaults. `testpypi-username` has no default and is required when the target is TestPyPI:
 
 ```toml
 [project]
@@ -31,7 +31,7 @@ allow-dirty = ["dev"] # [] forbids all dirty releases
 final-release-branches = ["main"] # nonempty list; false is invalid
 pre-release-branches = ["main"] # false allows any branch
 dev-release-branches = false # any branch
-# testpypi-username = "alice" # TestPyPI only: example-package-alice
+# testpypi-username = "alice" # required for TestPyPI: example-package-alice; ignored for PyPI
 github-release-publish = true
 github-release-types = ["pre", "final"] # [] creates no GitHub releases
 ```
@@ -91,7 +91,7 @@ Local mode derives project/version/commit from the checkout and the expected tag
 
 Builds run directly from the checkout with the project's configured backend. Build-dependency isolation and the frontend's default sdist-then-wheel behavior remain enabled. Backend-generated files such as build/ or egg-info should be ignored by the client project's Git rules. Nopt neither copies the source tree nor excludes directories itself.
 
-For optional TestPyPI username suffixing, eligibility checks run first against the original project name. Nopt saves the raw pyproject.toml bytes, parses with tomllib, changes project.name and writes temporary TOML using tomli-w. The temporary file may lose comments and formatting. After the build, finally cleanup restores the exact original bytes in both local and GHA modes, including when rewriting or building fails. Pre-existing uncommitted edits are preserved; nopt does not reset the file to HEAD. Other backend-generated checkout files remain the client's responsibility.
+TestPyPI always requires a valid username suffix. For TestPyPI builds, eligibility checks run first against the original project name. Nopt saves the raw pyproject.toml bytes, parses with tomllib, changes project.name and writes temporary TOML using tomli-w. The temporary file may lose comments and formatting. After the build, finally cleanup restores the exact original bytes in both local and GHA modes, including when rewriting or building fails. Pre-existing uncommitted edits are preserved; nopt does not reset the file to HEAD. Other backend-generated checkout files remain the client's responsibility.
 
 Static project.name is still required, but alternate valid TOML spellings such as quoted tables/keys or dotted keys are supported. No staging copy is made, and import names remain unchanged. Later commands independently derive the same effective name from the original project.name and configured suffix. Both publishing commands read configuration from the original pyproject.toml stored in the verified bundle. Each invocation applies only its own CLI overrides; overrides are never carried between steps. Overrides must be compatible with the saved distribution name and available release notes; publishing never rebuilds or regenerates missing content.
 
@@ -158,7 +158,9 @@ JSON where applicable. `nopt --help` describes the commands and `nopt --version`
 reports the installed distribution version.
 
 
-A configured `testpypi-username` is used only when `repository = "testpypi"`.
+A valid, nonempty `testpypi-username` is mandatory when `repository = "testpypi"`.
+For that target, omitted, empty, whitespace, boolean and other non-string values fail configuration
+validation before build or publication checks.
 For PyPI the username is ignored, so one project configuration can keep the
 TestPyPI suffix ready without renaming production distributions.
 

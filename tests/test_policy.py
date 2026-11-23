@@ -195,7 +195,7 @@ def test_configuration_rejects_empty_project_name(name: str) -> None:
     [
         ("pypi", "alice", "fixture"),
         ("testpypi", "alice", "fixture-alice"),
-        ("testpypi", None, "fixture"),
+        ("pypi", None, "fixture"),
     ],
 )
 def test_testpypi_username_only_affects_testpypi(
@@ -207,11 +207,20 @@ def test_testpypi_username_only_affects_testpypi(
     return
 
 
-@pytest.mark.parametrize("username", ["", "Alice", "two..dots"])
-def test_testpypi_validates_active_username(username: str) -> None:
+@pytest.mark.parametrize(
+    "username", [None, "", "   ", False, True, 0, [], {}, "Alice", "two..dots"]
+)
+def test_testpypi_validates_active_username(username: object) -> None:
     """Validate the username before using it in a TestPyPI distribution name."""
     with pytest.raises(ValueError, match="testpypi-username"):
-        validate(Config("fixture", "1.2.3", repository="testpypi", testpypi_username=username))
+        Config.from_mapping(
+            {
+                "name": "fixture",
+                "version": "1.2.3",
+                "repository": "testpypi",
+                "testpypi_username": username,
+            }
+        )
     return
 
 
@@ -226,4 +235,13 @@ def test_github_releases_require_changelog_notes(version: str) -> None:
         ).changelog
         is False
     )
+    return
+
+
+def test_testpypi_requires_username_in_toml(project: Path) -> None:
+    """Reject an omitted suffix setting when the actual TOML selects TestPyPI."""
+    with (project / "pyproject.toml").open("a", encoding="utf-8") as stream:
+        stream.write('repository = "testpypi"\n')
+    with pytest.raises(ValueError, match="requires testpypi-username"):
+        load(project)
     return

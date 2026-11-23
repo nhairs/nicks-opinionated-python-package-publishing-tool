@@ -64,7 +64,7 @@ class Config:  # pylint: disable=too-many-instance-attributes
     @property
     def distribution_name(self) -> str:
         """Return the index-facing distribution name."""
-        if self.repository == "testpypi" and self.testpypi_username is not None:
+        if self.repository == "testpypi":
             return f"{self.name}-{self.testpypi_username}"
         return self.name
 
@@ -119,12 +119,13 @@ def validate(config: Config) -> Config:  # pylint: disable=too-many-branches
         raise ValueError("github-release-publish must be boolean")
     if config.github_release_requested and config.changelog is False:
         raise ValueError("GitHub release publication requires changelog-derived release notes")
-    if config.repository == "testpypi" and config.testpypi_username is not None:
+    if config.repository == "testpypi":
         if not isinstance(config.testpypi_username, str) or not re.fullmatch(
             r"[a-z0-9]+(?:-[a-z0-9]+)*", config.testpypi_username
         ):
             raise ValueError(
-                "testpypi-username must use lowercase letters, digits and single hyphens"
+                "repository=testpypi requires testpypi-username with lowercase letters, "
+                "digits and single hyphens"
             )
         canonicalize_name(config.distribution_name, validate=True)
     return replace(

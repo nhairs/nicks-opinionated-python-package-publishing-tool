@@ -25,9 +25,7 @@ from nopt.cli import check_bundle_context, check_publish_bundle, build_context, 
 
 
 @pytest.mark.parametrize("backend", ["setuptools", "hatchling"])
-@pytest.mark.parametrize(
-    "suffix,target", [(False, "pypi"), (False, "testpypi"), (True, "testpypi"), (True, "pypi")]
-)
+@pytest.mark.parametrize("suffix,target", [(False, "pypi"), (True, "testpypi"), (True, "pypi")])
 def test_checkout_build_and_bundle(
     project: Path, tmp_path: Path, suffix: bool, target: str, backend: str
 ) -> None:

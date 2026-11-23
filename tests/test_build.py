@@ -26,7 +26,7 @@ from nopt.cli import check_bundle_context, check_publish_bundle, build_context, 
 
 @pytest.mark.parametrize("backend", ["setuptools", "hatchling"])
 @pytest.mark.parametrize(
-    "suffix,target", [(False, "pypi"), (False, "testpypi"), (True, "testpypi")]
+    "suffix,target", [(False, "pypi"), (False, "testpypi"), (True, "testpypi"), (True, "pypi")]
 )
 def test_checkout_build_and_bundle(
     project: Path, tmp_path: Path, suffix: bool, target: str, backend: str
@@ -44,7 +44,8 @@ def test_checkout_build_and_bundle(
         path.write_text(text, encoding="utf-8")
     config = replace(load(project), repository=target)
     if suffix:
-        config = replace(config, repository="testpypi", testpypi_username="alice")
+        config = replace(config, testpypi_username="alice")
+    rename_expected = target == "testpypi" and suffix
     context = Context(True)
     source = identity(project, config, context)
     ### Build from the checked checkout and verify exact restoration.
@@ -61,11 +62,11 @@ def test_checkout_build_and_bundle(
         assert (
             project
             / "src"
-            / ("fixture_package_alice.egg-info" if suffix else "fixture_package.egg-info")
+            / ("fixture_package_alice.egg-info" if rename_expected else "fixture_package.egg-info")
         ).is_dir()
     ### A later command derives the same identity from original configuration.
     policy = {"repository": target, **({"testpypi_username": "alice"} if suffix else {})}
-    if suffix:
+    if rename_expected:
         with pytest.raises(ValueError, match="invocation configuration"):
             read_and_verify_release_bundle(destination)
     verified, resolved = read_and_verify_release_bundle(destination, policy)
@@ -76,9 +77,7 @@ def test_checkout_build_and_bundle(
     fresh = tmp_path / "publishing-checkout"
     fresh.mkdir()
     (fresh / "pyproject.toml").write_text(original_pyproject, encoding="utf-8")
-    fresh_config = load(
-        fresh, {"repository": "testpypi", "testpypi_username": "alice"} if suffix else {}
-    )
+    fresh_config = load(fresh, policy)
     assert fresh_config.distribution_name == resolved.distribution_name
     wheel = next((destination / "dist").glob("*.whl"))
     # Import actual built Python from the wheel, independently of the source tree.

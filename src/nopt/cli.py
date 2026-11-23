@@ -247,7 +247,8 @@ def publish_github(
     }
     ### Gate GitHub publication on exact index filenames and hashes.
     index.verify_index(config.repository, config.distribution_name, config.version, expected)
-    # Recheck tag and existence after bounded metadata waiting.
+    # Index visibility can take minutes; another actor may move the tag or create
+    # a release while we wait. Refresh those external checks before the first write.
     github.check_tag(data["source"]["tag"], data["source"]["commit"])
     github.release_absent(data["source"]["tag"])
     latest = github.is_latest_final(config.version)

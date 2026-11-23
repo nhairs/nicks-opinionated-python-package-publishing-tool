@@ -86,7 +86,6 @@ def test_defaults_and_explicit_false(project: Path) -> None:
         {"changelog": True},
         {"github_release_types": ["stable"]},
         {"allow_dirty": False},
-        {"testpypi_username": "alice"},
     ],
 )
 def test_bad_configuration(changes: dict[str, object]) -> None:
@@ -183,16 +182,34 @@ def test_nonfinal_requires_unreleased(project: Path, version: str) -> None:
     return
 
 
+@pytest.mark.parametrize("name", ["", "   "])
+def test_configuration_rejects_empty_project_name(name: str) -> None:
+    """Reject invalid identity at the configuration boundary before any build edits."""
+    with pytest.raises(ValueError, match="project.name"):
+        Config.from_mapping({"name": name, "version": "1.2.3"})
+    return
+
+
 @pytest.mark.parametrize(
-    "original,new_name",
-    [("", "valid-name"), ("   ", "valid-name"), ("valid-name", ""), ("valid-name", "   ")],
+    "repository,username,expected",
+    [
+        ("pypi", "alice", "fixture"),
+        ("testpypi", "alice", "fixture-alice"),
+        ("testpypi", None, "fixture"),
+    ],
 )
-def test_testpypi_rename_rejects_empty_names(tmp_path: Path, original: str, new_name: str) -> None:
-    """Refuse empty names before altering the checkout TOML."""
-    path = tmp_path / "pyproject.toml"
-    source = f'[project]\nname = "{original}"\nversion = "1.2.3"\n'.encode()
-    path.write_bytes(source)
-    with pytest.raises(ValueError, match="static project.name"):
-        rename_distribution(path, new_name)
-    assert path.read_bytes() == source
+def test_testpypi_username_only_affects_testpypi(
+    repository: str, username: str | None, expected: str
+) -> None:
+    """Allow one configured username while selecting either package index per invocation."""
+    config = validate(Config("fixture", "1.2.3", repository=repository, testpypi_username=username))
+    assert config.distribution_name == expected
+    return
+
+
+@pytest.mark.parametrize("username", ["", "Alice", "two..dots"])
+def test_testpypi_validates_active_username(username: str) -> None:
+    """Validate the username before using it in a TestPyPI distribution name."""
+    with pytest.raises(ValueError, match="testpypi-username"):
+        validate(Config("fixture", "1.2.3", repository="testpypi", testpypi_username=username))
     return

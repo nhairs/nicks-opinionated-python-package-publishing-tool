@@ -64,9 +64,9 @@ class Config:  # pylint: disable=too-many-instance-attributes
     @property
     def distribution_name(self) -> str:
         """Return the index-facing distribution name."""
-        return (
-            self.name if self.testpypi_username is None else f"{self.name}-{self.testpypi_username}"
-        )
+        if self.repository == "testpypi" and self.testpypi_username is not None:
+            return f"{self.name}-{self.testpypi_username}"
+        return self.name
 
     @property
     def github_release_requested(self) -> bool:
@@ -117,9 +117,7 @@ def validate(config: Config) -> Config:  # pylint: disable=too-many-branches
                 raise ValueError("branches must be literal valid Git branch names, without globs")
     if not isinstance(config.github_release_publish, bool):
         raise ValueError("github-release-publish must be boolean")
-    if config.testpypi_username is not None:
-        if config.repository != "testpypi":
-            raise ValueError("testpypi-username requires repository=testpypi")
+    if config.repository == "testpypi" and config.testpypi_username is not None:
         if not isinstance(config.testpypi_username, str) or not re.fullmatch(
             r"[a-z0-9]+(?:-[a-z0-9]+)*", config.testpypi_username
         ):

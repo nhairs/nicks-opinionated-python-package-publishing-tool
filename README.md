@@ -120,6 +120,10 @@ Generation does not change settings. Keep distributions passed to the upload act
 
 ## Limits and deferred recovery
 
+The current GitHub publisher creates the published release before uploading assets.
+Draft staging for immutable releases is under review; do not use this initial flow
+with immutable releases enabled until that lifecycle is implemented.
+
 Existing GitHub releases cause failure. Automatic release/asset reconciliation and partial PyPI upload recovery are deferred. If release creation succeeds but an asset upload fails, a retry also fails because the release exists; an owner must review the original evidence and handle recovery manually. Do not rebuild or re-upload a published version. Expired Actions artifacts limit recovery; retain original bytes/evidence separately when needed. The initial template also binds bundles to a run attempt and does not implement failed-job rerun recovery; do not use reruns to attempt another package upload. Same-tag workflow runs are serialized without automatic cancellation.
 
 Backend-specific source selection is delegated to the backend through python-build. Nopt does not calculate a source-file fingerprint or promise that backend builds leave the checkout untouched. Build hooks run project code; only run nopt on trusted projects. No production package migrations are included.
@@ -151,3 +155,17 @@ to `uvx nopt ...`; until then it installs from Git. This migration remains TODO.
 CLI failures propagate their exceptions and tracebacks; successful commands return
 JSON where applicable. `nopt --help` describes the commands and `nopt --version`
 reports the installed distribution version.
+
+
+A configured `testpypi-username` is used only when `repository = "testpypi"`.
+For PyPI the username is ignored, so one project configuration can keep the
+TestPyPI suffix ready without renaming production distributions.
+
+The pin updater runs the open-source Renovate CLI inside GitHub Actions; it does
+not require a paid Renovate service subscription. `RENOVATE_TOKEN` authenticates
+to GitHub. Normal GitHub Actions usage rules still apply.
+
+The current workflow binding includes the build attempt number. Re-running only
+a publication job with an earlier attempt's bundle is rejected even within the
+same workflow run. Publish-only rerun support remains part of deferred recovery
+planning; nopt does not silently rebuild or reuse a partially published release.

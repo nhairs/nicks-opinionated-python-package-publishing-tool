@@ -278,6 +278,8 @@ def read_and_verify_release_bundle(
         or any(Path(name).parent.as_posix() != "dist" for name in artifact_files)
     ):
         raise ValueError("release bundle must contain exactly one wheel and one sdist under dist/")
+    if config.github_release_requested and "release-notes.md" not in expected_files:
+        raise ValueError("GitHub release publication requires bundled release-notes.md")
     allowed_files = artifact_files | {"pyproject.toml"}
     if "release-notes.md" in expected_files:
         allowed_files.add("release-notes.md")

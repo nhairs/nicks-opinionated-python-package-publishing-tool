@@ -56,7 +56,7 @@ Use a base-version section, shared by dev/pre/final releases:
 - Describe the changes.
 ```
 
-Exactly one matching level-two section is required and the complete section is used as release notes. Its body must contain a nonblank line that does not start with `#`. Dev/pre require `UNRELEASED`; final releases require a real `YYYY-MM-DD` date. Nopt never changes dates. `changelog = false` or `--no-changelog` disables all changelog policy.
+Exactly one matching level-two section is required and the complete section is used as release notes. Its body must contain a nonblank line that does not start with `#`. Dev/pre require `UNRELEASED`; final releases require a real `YYYY-MM-DD` date. Nopt never changes dates. `changelog = false` or `--no-changelog` disables changelog policy for package-only releases. Requested GitHub releases require changelog extraction and the checked `release-notes.md` in the bundle; disable GitHub publication to use `changelog = false` for those release types.
 
 ## Command flow
 
@@ -120,11 +120,12 @@ Generation does not change settings. Keep distributions passed to the upload act
 
 ## Limits and deferred recovery
 
-The current GitHub publisher creates the published release before uploading assets.
-Draft staging for immutable releases is under review; do not use this initial flow
-with immutable releases enabled until that lifecycle is implemented.
+GitHub publication creates an internal draft, uploads every verified original asset,
+refreshes the live tag and latest ranking, then publishes the draft. Assets are in
+place before publication makes an immutable release permanent. Checks-only makes
+no draft or uploads.
 
-Existing GitHub releases cause failure. Automatic release/asset reconciliation and partial PyPI upload recovery are deferred. If release creation succeeds but an asset upload fails, a retry also fails because the release exists; an owner must review the original evidence and handle recovery manually. Do not rebuild or re-upload a published version. Expired Actions artifacts limit recovery; retain original bytes/evidence separately when needed. The initial template also binds bundles to a run attempt and does not implement failed-job rerun recovery; do not use reruns to attempt another package upload. Same-tag workflow runs are serialized without automatic cancellation.
+Existing published or visible draft GitHub releases for the tag cause failure. Automatic release/asset reconciliation and partial PyPI upload recovery are deferred. If draft creation succeeds but an upload or pre-publication check fails, the draft is left unpublished. An unsuccessful or unconfirmed final publication request can leave uncertain remote state; inspect it manually. A retry fails if either the draft or published release exists. An owner must review the original evidence and handle recovery manually. Do not rebuild or re-upload a published version. Expired Actions artifacts limit recovery; retain original bytes/evidence separately when needed. The initial template also binds bundles to a run attempt and does not implement failed-job rerun recovery; do not use reruns to attempt another package upload. Same-tag workflow runs are serialized without automatic cancellation.
 
 Backend-specific source selection is delegated to the backend through python-build. Nopt does not calculate a source-file fingerprint or promise that backend builds leave the checkout untouched. Build hooks run project code; only run nopt on trusted projects. No production package migrations are included.
 

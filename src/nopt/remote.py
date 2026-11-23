@@ -149,10 +149,62 @@ class GitHubClient:
         return is_latest_final(version, refs)
 
     def release_absent(self, tag: str) -> None:
-        """Fail on an existing release; recovery is deliberately deferred."""
+        """Reject a visible published or draft release; recovery is deferred."""
         if self.github(f"releases/tags/{quote(tag, safe='')}") is not None:
             raise ValueError("GitHub release already exists; automatic recovery is not implemented")
-        return
+        # Tag lookup returns published releases only. Drafts require authenticated
+        # listings with push access; publication jobs have contents: write.
+        page = 1
+        while True:
+            releases = self.github(f"releases?per_page=100&page={page}")
+            if not isinstance(releases, list):
+                raise ValueError("GitHub releases listing must be an array")
+            for release in releases:
+                if not isinstance(release, dict) or not isinstance(release.get("tag_name"), str):
+                    raise ValueError("malformed GitHub release listing")
+                if release["tag_name"] == tag:
+                    raise ValueError(
+                        "GitHub release already exists (draft or published); recovery is deferred"
+                    )
+            if len(releases) < 100:
+                return
+            page += 1
+
+    def create_draft_release(self, metadata: Mapping[str, object]) -> int:
+        """Create an unpublished release and require its identity before uploading."""
+        release = self.github(
+            "releases", "POST", {**metadata, "draft": True, "make_latest": "false"}
+        )
+        if not isinstance(release, dict):
+            raise ValueError("GitHub did not return a draft release identity")
+        release_id = release.get("id")
+        if not isinstance(release_id, int) or isinstance(release_id, bool):
+            raise ValueError("GitHub did not return an integer release identity")
+        if release.get("draft") is not True or release.get("tag_name") != metadata["tag_name"]:
+            raise ValueError("GitHub did not create the expected draft release")
+        return release_id
+
+    def publish_draft_release(self, release_id: int, latest: bool) -> str:
+        """Publish only after uploads finish and confirm the draft became public."""
+        release = self.github(
+            f"releases/{release_id}",
+            "PATCH",
+            {"draft": False, "make_latest": "true" if latest else "false"},
+        )
+        if not isinstance(release, dict):
+            raise ValueError("GitHub did not return a published release identity")
+        observed_id = release.get("id")
+        if (
+            not isinstance(observed_id, int)
+            or isinstance(observed_id, bool)
+            or observed_id != release_id
+            or release.get("draft") is not False
+        ):
+            raise ValueError("GitHub did not confirm publication of the expected release")
+        release_url = release.get("html_url")
+        if not isinstance(release_url, str) or not release_url:
+            raise ValueError("GitHub did not return a release URL")
+        return release_url
 
 
 def publication_matches(data: object, expected: Mapping[str, str]) -> bool:

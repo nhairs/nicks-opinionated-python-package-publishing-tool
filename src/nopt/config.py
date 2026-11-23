@@ -117,6 +117,8 @@ def validate(config: Config) -> Config:  # pylint: disable=too-many-branches
                 raise ValueError("branches must be literal valid Git branch names, without globs")
     if not isinstance(config.github_release_publish, bool):
         raise ValueError("github-release-publish must be boolean")
+    if config.github_release_requested and config.changelog is False:
+        raise ValueError("GitHub release publication requires changelog-derived release notes")
     if config.repository == "testpypi" and config.testpypi_username is not None:
         if not isinstance(config.testpypi_username, str) or not re.fullmatch(
             r"[a-z0-9]+(?:-[a-z0-9]+)*", config.testpypi_username

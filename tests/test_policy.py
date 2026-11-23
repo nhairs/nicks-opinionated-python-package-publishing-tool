@@ -213,3 +213,17 @@ def test_testpypi_validates_active_username(username: str) -> None:
     with pytest.raises(ValueError, match="testpypi-username"):
         validate(Config("fixture", "1.2.3", repository="testpypi", testpypi_username=username))
     return
+
+
+@pytest.mark.parametrize("version", ["1.2.3", "1.2.3rc1"])
+def test_github_releases_require_changelog_notes(version: str) -> None:
+    """Reject requested announcements without notes but permit package-only releases."""
+    with pytest.raises(ValueError, match="requires changelog-derived"):
+        validate(Config("fixture", version, changelog=False))
+    assert (
+        validate(
+            Config("fixture", version, changelog=False, github_release_publish=False)
+        ).changelog
+        is False
+    )
+    return

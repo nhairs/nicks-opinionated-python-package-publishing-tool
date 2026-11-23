@@ -251,40 +251,31 @@ def publish_github(
     # a release while we wait. Refresh those external checks before the first write.
     github.check_tag(data["source"]["tag"], data["source"]["commit"])
     github.release_absent(data["source"]["tag"])
-    latest = github.is_latest_final(config.version)
     if args.check_only:
-        return {"checked": "publish-github-release", "latest": latest}
-    release_notes = (
-        (args.release_bundle / "release-notes.md").read_text(encoding="utf-8")
-        if config.changelog is not False
-        else ""
-    )
-    ### Create the release once; existing-release recovery remains deferred.
-    release = github.github(
-        "releases",
-        "POST",
+        return {
+            "checked": "publish-github-release",
+            "latest": github.is_latest_final(config.version),
+        }
+    release_notes = (args.release_bundle / "release-notes.md").read_text(encoding="utf-8")
+    ### Stage the release privately so immutable publication includes every asset.
+    release_id = github.create_draft_release(
         {
             "tag_name": data["source"]["tag"],
             "target_commitish": data["source"]["commit"],
             "name": data["source"]["tag"],
             "body": release_notes,
-            "draft": False,
             "prerelease": config.release_type != "final",
-            "make_latest": "true" if latest else "false",
-        },
+        }
     )
-    if not isinstance(release, dict):
-        raise ValueError("GitHub did not return a release identity")
-    release_id = release.get("id")
-    if not isinstance(release_id, int) or isinstance(release_id, bool):
-        raise ValueError("GitHub did not return an integer release identity")
-    release_url = release.get("html_url")
-    if not isinstance(release_url, str):
-        raise ValueError("GitHub did not return a release URL")
-    ### Attach only the verified original files.
     assets = [p for p in args.release_bundle.rglob("*") if p.is_file()]
     for path in sorted(assets):
         github.upload_asset(release_id, path)
+    # Uploads can take time too. Recheck the tag and latest ranking immediately
+    # before publication. Upload/check failures leave a draft; an unconfirmed
+    # publication request requires manual inspection of the remote state.
+    github.check_tag(data["source"]["tag"], data["source"]["commit"])
+    latest = github.is_latest_final(config.version)
+    release_url = github.publish_draft_release(release_id, latest)
     return {"github_release": release_url, "assets": len(assets)}
 
 

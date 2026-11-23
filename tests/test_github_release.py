@@ -55,7 +55,7 @@ def github_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[APIState]:
             """Expose live tags, publication metadata and paginated releases."""
             state.requests.append(("GET", self.path))
             parts = urlsplit(self.path)
-            if "/commits/tags/" in parts.path:
+            if parts.path == "/repos/owner/repo/commits/tags/v1.2.3":
                 self.respond(200, {"sha": "a" * 40})
             elif parts.path.endswith("/git/matching-refs/tags/"):
                 self.respond(200, [{"ref": "refs/tags/v1.2.3"}])
@@ -95,6 +95,7 @@ def github_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[APIState]:
                 state.release = {"id": 7, "draft": True, "tag_name": payload["tag_name"]}
                 self.respond(201, state.release)
             else:
+                assert parts.path == "/repos/owner/repo/releases/7/assets"
                 assert state.release and state.release["draft"] is True
                 if state.fail_upload:
                     self.respond(500, {"message": "Upload interrupted"})
@@ -107,6 +108,7 @@ def github_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[APIState]:
         def do_PATCH(self) -> None:
             """Publish only after every original asset has been uploaded."""
             state.requests.append(("PATCH", self.path))
+            assert self.path == "/repos/owner/repo/releases/7"
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             assert payload == {"draft": False, "make_latest": "true"}
             assert len(state.assets) == 6

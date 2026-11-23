@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nopt"
+version = "0.1.0.dev0"
+description = "Nicks Opinionated (Python Package) Publishing Tool"
+requires-python = ">=3.11"
+authors = [{name = "Nicholas Hairs", email = "info+nopt@nicholashairs.com"}]
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENCE"]
+dependencies = ["build>=1.2.2", "packaging>=24", "uv>=0.8", "tomli-w>=1.2"]
+
+[project.scripts]
+nopt = "nopt.cli:main"
+
+[project.urls]
+GitHub = "https://github.com/nhairs/nicks-opinionated-python-package-publishing-tool"
+
+[dependency-groups]
+dev = ["pytest>=8", "black", "pylint", "pyrefly", "validate-pyproject[all]", "tox>=4", "tox-uv"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nopt = ["workflow.yml"]
+
+[tool.black]
+line-length = 100
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.messages_control]
+disable = ["useless-return"]
+
+[tool.nopt]

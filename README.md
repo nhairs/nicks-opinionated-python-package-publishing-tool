@@ -6,14 +6,15 @@ This initial implementation requires Python 3.11+ and a Python project in a Git 
 
 ## Install
 
-Install from a reviewed checkout:
+Run the published package with uv (Python 3.11 or later):
 
 ```sh
-python -m pip install .
-nopt --help
+uvx --from 'nopt==0.1.0.dev0' nopt --help
 ```
 
-The project has not been published to PyPI. Workflow templates install nopt from its Git repository; pin that requirement and review the pinned action references before enabling production publishing.
+The workflow template uses the same pinned PyPI version in every job. When upgrading nopt, update all four command pins together and review the pinned action references before enabling production publishing.
+
+For repeated local use, install it with `uv tool install 'nopt==0.1.0.dev0'`, then run `nopt` directly.
 
 ## Configure a project
 
@@ -139,9 +140,6 @@ uvx tox
 
 CI runs tox with tox-uv on Linux, macOS and Windows for CPython 3.11–3.15 and PyPy 3.11–3.12. Integration tests use real local Git repositories and isolated wheel/sdist builds. Build tests exercise both setuptools and Hatchling, with and without TestPyPI name rewriting. No tests perform package publication, create GitHub releases or change remote settings.
 
-
-After the initial nopt publication, change the template's tool installation/commands
-to `uvx nopt ...`; until then it installs from Git. This migration remains TODO.
 
 CLI failures propagate their exceptions and tracebacks; successful commands return
 JSON where applicable. `nopt --help` describes the commands and `nopt --version`

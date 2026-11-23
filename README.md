@@ -140,16 +140,6 @@ uvx tox
 CI runs tox with tox-uv on Linux, macOS and Windows for CPython 3.11–3.15 and PyPy 3.11–3.12. Integration tests use real local Git repositories and isolated wheel/sdist builds. Build tests exercise both setuptools and Hatchling, with and without TestPyPI name rewriting. No tests perform package publication, create GitHub releases or change remote settings.
 
 
-### Update action pins
-
-The weekly or manually dispatched `update-action-pins.yml` workflow runs Renovate.
-It covers this repository's workflows and the shipped `src/nopt/workflow.yml`
-template, updating commit pins and their version comments through reviewable PRs.
-It does not merge updates automatically. Configure a `RENOVATE_TOKEN` repository
-secret with access to create branches/PRs and update workflow files; the workflow
-reports a missing secret rather than silently skipping updates. No credentials or
-repository settings are configured by nopt.
-
 After the initial nopt publication, change the template's tool installation/commands
 to `uvx nopt ...`; until then it installs from Git. This migration remains TODO.
 
@@ -163,10 +153,6 @@ For that target, omitted, empty, whitespace, boolean and other non-string values
 validation before build or publication checks.
 For PyPI the username is ignored, so one project configuration can keep the
 TestPyPI suffix ready without renaming production distributions.
-
-The pin updater runs the open-source Renovate CLI inside GitHub Actions; it does
-not require a paid Renovate service subscription. `RENOVATE_TOKEN` authenticates
-to GitHub. Normal GitHub Actions usage rules still apply.
 
 The current workflow binding includes the build attempt number. Re-running only
 a publication job with an earlier attempt's bundle is rejected even within the

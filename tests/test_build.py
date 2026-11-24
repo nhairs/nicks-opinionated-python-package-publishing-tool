@@ -55,6 +55,10 @@ def test_checkout_build_and_bundle(
     )
     assert (project / "pyproject.toml").read_bytes() == original_bytes
     assert (destination / "pyproject.toml").read_bytes() == original_bytes
+    assert (destination / "release.json.sha256sum").read_bytes() == (
+        f"{sha256(destination / 'release.json')}  release.json\n".encode("ascii")
+    )
+    assert not (destination / "SHA256SUMS").exists()
     # Ordinary setuptools build outputs are created in the actual checkout.
     if backend == "setuptools":
         assert (
@@ -101,6 +105,9 @@ def test_checkout_build_and_bundle(
     (destination / "release-notes.md").write_text("tampered", encoding="utf-8")
     with pytest.raises(ValueError, match="checksum"):
         read_and_verify_release_bundle(destination, policy)
+    (destination / "release-notes.md").unlink()
+    with pytest.raises(ValueError, match="missing=.*release-notes.md"):
+        read_and_verify_release_bundle(destination, policy)
     return
 
 
@@ -142,12 +149,76 @@ def test_cli_requires_explicit_local_mode(project: Path, monkeypatch: pytest.Mon
     return
 
 
+def write_test_manifest(bundle: Path, contents: bytes) -> None:
+    """Write standalone manifest bytes with a matching checksum."""
+    manifest = bundle / "release.json"
+    manifest.write_bytes(contents)
+    (bundle / "release.json.sha256sum").write_bytes(
+        f"{sha256(manifest)}  release.json\n".encode("ascii")
+    )
+    return
+
+
 @pytest.mark.parametrize(
-    "entry", ["../outside", "/absolute", "dist/../../outside", "dist\\outside"]
+    "contents",
+    [b"", b"a" * 64 + b"  other.json\n", (b"a" * 64 + b"  release.json\n") * 2],
+)
+def test_bundle_rejects_malformed_sidecar(tmp_path: Path, contents: bytes) -> None:
+    """Require exactly one checksum line for the fixed manifest name."""
+    (tmp_path / "release.json.sha256sum").write_bytes(contents)
+    with pytest.raises(ValueError, match=r"invalid release\.json\.sha256sum"):
+        read_and_verify_release_bundle(tmp_path)
+    return
+
+
+def test_bundle_requires_manifest_sidecar(tmp_path: Path) -> None:
+    """Direct readers of older bundles to the nopt version that built them."""
+    write_test_manifest(tmp_path, b"{}")
+    (tmp_path / "release.json.sha256sum").rename(tmp_path / "SHA256SUMS")
+    with pytest.raises(ValueError, match=r"missing release\.json\.sha256sum.*version that built"):
+        read_and_verify_release_bundle(tmp_path)
+    return
+
+
+def test_bundle_checks_manifest_bytes_before_decoding(tmp_path: Path) -> None:
+    """Report tampering before attempting to decode unusable manifest bytes."""
+    write_test_manifest(tmp_path, b"{}")
+    (tmp_path / "release.json").write_bytes(b"invalid json")
+    with pytest.raises(ValueError, match=r"checksum mismatch: release\.json"):
+        read_and_verify_release_bundle(tmp_path)
+    return
+
+
+@pytest.mark.parametrize(
+    "contents,error",
+    [
+        (b"invalid json", "Expecting value"),
+        (b'{"schema_version": 1, "files": []}', "files must be an object"),
+        (
+            b'{"schema_version": 1, "files": {"pyproject.toml": false}}',
+            "invalid release bundle checksum: pyproject.toml",
+        ),
+        (
+            b'{"schema_version": 1, "files": {"pyproject.toml": "", "pyproject.toml": ""}}',
+            "duplicate key",
+        ),
+    ],
+)
+def test_bundle_rejects_invalid_inventory(tmp_path: Path, contents: bytes, error: str) -> None:
+    """Reject invalid manifests even when their checksum matches."""
+    write_test_manifest(tmp_path, contents)
+    with pytest.raises(ValueError, match=error):
+        read_and_verify_release_bundle(tmp_path)
+    return
+
+
+@pytest.mark.parametrize(
+    "entry", ["../outside", "/absolute", "dist/../../outside", "dist\\outside", "C:outside"]
 )
 def test_bundle_rejects_unsafe_paths(tmp_path: Path, entry: str) -> None:
-    """Reject escaping or platform-ambiguous paths in bundle checksums."""
-    (tmp_path / "SHA256SUMS").write_text("a" * 64 + "  " + entry + "\n", encoding="utf-8")
+    """Reject escaping or platform-ambiguous paths in the manifest."""
+    manifest = {"schema_version": 1, "files": {entry: "a" * 64}}
+    write_test_manifest(tmp_path, json.dumps(manifest).encode("utf-8"))
     with pytest.raises(ValueError, match="unsafe"):
         read_and_verify_release_bundle(tmp_path)
     return
@@ -211,17 +282,7 @@ def test_bundle_rejects_malformed_metadata(
     manifest_path = bundle / "release.json"
     manifest: dict[str, object] = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest[field] = value
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    checksum_path = bundle / "SHA256SUMS"
-    lines = checksum_path.read_text(encoding="utf-8").splitlines()
-    checksum_path.write_text(
-        "\n".join(
-            f"{sha256(manifest_path)}  release.json" if line.endswith("  release.json") else line
-            for line in lines
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    write_test_manifest(bundle, json.dumps(manifest).encode("utf-8"))
     ### The invalid structure must fail at the metadata boundary.
     with pytest.raises(ValueError):
         read_and_verify_release_bundle(bundle)

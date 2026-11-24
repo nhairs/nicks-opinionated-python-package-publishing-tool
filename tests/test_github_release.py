@@ -15,6 +15,7 @@ import zipfile
 import pytest
 
 from nopt import remote
+from nopt.bundle import read_and_verify_release_bundle
 from nopt.cli import build_parser, execute
 
 
@@ -197,11 +198,8 @@ def checked_release_bundle(root: Path, include_notes: bool = True) -> Path:
     }
     manifest_path = root / "release.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    hashes["release.json"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-    (root / "SHA256SUMS").write_text(
-        "".join(f"{digest}  {name}\n" for name, digest in sorted(hashes.items())),
-        encoding="utf-8",
-    )
+    digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    (root / "release.json.sha256sum").write_bytes(f"{digest}  release.json\n".encode("ascii"))
     return root
 
 
@@ -215,6 +213,22 @@ def publish_arguments(release_bundle: Path, state: APIState, check_only: bool = 
     if check_only:
         arguments.append("--check-only")
     return arguments
+
+
+@pytest.mark.parametrize("filename", ["release.json", "release.json.sha256sum", "pyproject.toml"])
+def test_bundle_requires_regular_files(tmp_path: Path, filename: str) -> None:
+    """Refuse links even when their target contains the expected bytes."""
+    bundle = checked_release_bundle(tmp_path / "release-bundle")
+    path = bundle / filename
+    target = tmp_path / filename
+    path.rename(target)
+    try:
+        path.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    with pytest.raises(ValueError, match="must be a regular file"):
+        read_and_verify_release_bundle(bundle)
+    return
 
 
 def test_draft_upload_then_publish(tmp_path: Path, github_api: APIState) -> None:

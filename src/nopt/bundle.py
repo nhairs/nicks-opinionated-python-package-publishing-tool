@@ -22,6 +22,8 @@ from .source import Context, ContextData, SourceIdentity
 from .project import rename_distribution
 
 _SCHEMA_VERSION = 1
+_MANIFEST_NAME = "release.json"
+_MANIFEST_CHECKSUM = "release.json.sha256sum"
 
 
 class ReleaseManifest(TypedDict):
@@ -166,76 +168,115 @@ def build_release_bundle(
             "context": cast(ContextData, asdict(context)),
             "files": hashes,
         }
-        (release_bundle / "release.json").write_text(
+        manifest_path = release_bundle / _MANIFEST_NAME
+        manifest_path.write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        ### Preserve checksum text and original bytes in the final local release bundle.
-        checksums = dict(manifest["files"])
-        checksums["release.json"] = sha256(release_bundle / "release.json")
-        (release_bundle / "SHA256SUMS").write_text(
-            "".join(f"{digest}  {name}\n" for name, digest in sorted(checksums.items())),
-            encoding="utf-8",
+        (release_bundle / _MANIFEST_CHECKSUM).write_bytes(
+            f"{sha256(manifest_path)}  {_MANIFEST_NAME}\n".encode("ascii")
         )
         release_bundle_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(release_bundle, release_bundle_path)
     return manifest
 
 
-# pylint: disable-next=too-many-branches,too-many-locals,too-many-statements
-def read_and_verify_release_bundle(
-    release_bundle: Path, overrides: Mapping[str, object] | None = None
-) -> tuple[ReleaseManifest, Config]:
-    """Verify every byte and narrow decoded release metadata before using it."""
-    ### Verify checksums and reject paths outside the original release bundle.
-    release_bundle = release_bundle.resolve()
-    if (release_bundle / "SHA256SUMS").is_symlink():
-        raise ValueError("SHA256SUMS must be a regular file")
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject duplicate keys in the manifest and its payload inventory."""
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ValueError("duplicate key in release manifest")
+    return result
+
+
+def _read_release_manifest(release_bundle: Path) -> dict[str, object]:
+    """Verify the manifest bytes before parsing them."""
+    checksum_path = release_bundle / _MANIFEST_CHECKSUM
+    if not checksum_path.exists() and not checksum_path.is_symlink():
+        raise ValueError(
+            f"missing {_MANIFEST_CHECKSUM}; use the nopt version that built the bundle"
+        )
+    if checksum_path.is_symlink() or not checksum_path.is_file():
+        raise ValueError(f"{_MANIFEST_CHECKSUM} must be a regular file")
+    match = re.fullmatch(rb"([0-9a-f]{64})  release\.json\n", checksum_path.read_bytes())
+    if not match:
+        raise ValueError(f"invalid {_MANIFEST_CHECKSUM}")
+    manifest_path = release_bundle / _MANIFEST_NAME
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError(f"{_MANIFEST_NAME} must be a regular file")
+    manifest_bytes = manifest_path.read_bytes()
+    if hashlib.sha256(manifest_bytes).hexdigest().encode("ascii") != match[1]:
+        raise ValueError(f"release bundle checksum mismatch: {_MANIFEST_NAME}")
+    decoded: object = json.loads(
+        manifest_bytes.decode("utf-8"), object_pairs_hook=_unique_json_object
+    )
+    if not isinstance(decoded, dict):
+        raise ValueError("release manifest must be an object")
+    return cast(dict[str, object], decoded)
+
+
+def _verify_bundle_payload(release_bundle: Path, inventory: object) -> dict[str, str]:
+    """Check the exact set of payload files and their recorded digests."""
+    if not isinstance(inventory, dict):
+        raise ValueError("release manifest files must be an object")
     checksums: dict[str, str] = {}
-    for line in (release_bundle / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
-        match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
-        if not match:
-            raise ValueError("invalid SHA256SUMS")
-        digest, name = match.groups()
-        if name in checksums or name.startswith("/") or "\\" in name or ".." in Path(name).parts:
-            raise ValueError("unsafe or duplicate release bundle path")
+    for name, digest in inventory.items():
+        if any(part in {"", ".", ".."} for part in name.split("/")) or re.search(
+            r"[\\:\x00-\x1f]", name
+        ):
+            raise ValueError(f"unsafe release bundle path: {name!r}")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"invalid release bundle checksum: {name}")
+        checksums[name] = digest
+
+    ### Trust build-time metadata checks; verify only the checked release bundle layout here.
+    artifact_files = {name for name in checksums if name.startswith("dist/")}
+    if (
+        len(artifact_files) != 2
+        or sum(name.endswith(".whl") for name in artifact_files) != 1
+        or sum(name.endswith(".tar.gz") for name in artifact_files) != 1
+        or any(name.count("/") != 1 for name in artifact_files)
+    ):
+        raise ValueError("release bundle must contain exactly one wheel and one sdist under dist/")
+    allowed_files = artifact_files | {"pyproject.toml", "release-notes.md"}
+    if unexpected_files := set(checksums) - allowed_files:
+        raise ValueError(f"unexpected release bundle members: {sorted(unexpected_files)}")
+    if "pyproject.toml" not in checksums:
+        raise ValueError("release bundle manifest must list pyproject.toml")
+
+    actual = {
+        path.relative_to(release_bundle).as_posix()
+        for path in release_bundle.rglob("*")
+        if path.is_symlink() or not path.is_dir()
+    }
+    expected = set(checksums) | {_MANIFEST_NAME, _MANIFEST_CHECKSUM}
+    if actual != expected:
+        raise ValueError(
+            "release bundle file set disagrees with manifest: "
+            f"unexpected={sorted(actual - expected)}, missing={sorted(expected - actual)}"
+        )
+    for name, digest in checksums.items():
         path = release_bundle / name
         if (
-            not path.resolve().is_relative_to(release_bundle)
-            or path.is_symlink()
+            path.is_symlink()
             or not path.is_file()
+            or not path.resolve().is_relative_to(release_bundle)
         ):
             raise ValueError("release bundle entry must be a regular file inside release bundle")
         if sha256(path) != digest:
             raise ValueError(f"release bundle checksum mismatch: {name}")
-        checksums[name] = digest
-    actual = {
-        path.relative_to(release_bundle).as_posix()
-        for path in release_bundle.rglob("*")
-        if path.is_file() or path.is_symlink()
-    }
-    # The loop checks listed files; this inventory also detects unlisted additions,
-    # such as an extra wheel or temporary file copied into a downloaded artifact.
-    unexpected_files = actual - (set(checksums) | {"SHA256SUMS"})
-    missing_files = (set(checksums) | {"SHA256SUMS"}) - actual
-    if unexpected_files or missing_files:
-        raise ValueError(
-            "release bundle file set disagrees with SHA256SUMS: "
-            f"unexpected={sorted(unexpected_files)}, missing={sorted(missing_files)}"
-        )
-    if "release.json" not in checksums:
-        raise ValueError("release.json must be listed in SHA256SUMS")
+    return checksums
 
-    ### Narrow untrusted JSON to the schema's configuration and identity fields.
-    decoded: object = json.loads((release_bundle / "release.json").read_text(encoding="utf-8"))
-    if not isinstance(decoded, dict):
-        raise ValueError("release manifest must be an object")
-    manifest_data = cast(dict[str, object], decoded)
+
+def read_and_verify_release_bundle(
+    release_bundle: Path, overrides: Mapping[str, object] | None = None
+) -> tuple[ReleaseManifest, Config]:
+    """Verify every byte and narrow decoded release metadata before using it."""
+    release_bundle = release_bundle.resolve()
+    manifest_data = _read_release_manifest(release_bundle)
     schema = manifest_data.get("schema_version")
     if not isinstance(schema, int) or isinstance(schema, bool) or schema != _SCHEMA_VERSION:
         raise ValueError("unsupported release manifest schema")
-    expected_files = {name: digest for name, digest in checksums.items() if name != "release.json"}
-    if manifest_data.get("files") != expected_files:
-        raise ValueError("release manifest disagrees with checksums")
+    expected_files = _verify_bundle_payload(release_bundle, manifest_data.get("files"))
     # Re-read project policy from the bundled TOML for this invocation only.
     config = load(release_bundle, overrides)
     distribution_name = manifest_data.get("distribution_name")
@@ -269,24 +310,8 @@ def read_and_verify_release_bundle(
     ):
         raise ValueError("invalid release execution context values")
 
-    ### Trust build-time metadata checks; verify only the checked release bundle layout here.
-    artifact_files = {name for name in expected_files if name.startswith("dist/")}
-    if (
-        len(artifact_files) != 2
-        or sum(name.endswith(".whl") for name in artifact_files) != 1
-        or sum(name.endswith(".tar.gz") for name in artifact_files) != 1
-        or any(Path(name).parent.as_posix() != "dist" for name in artifact_files)
-    ):
-        raise ValueError("release bundle must contain exactly one wheel and one sdist under dist/")
     if config.github_release_requested and "release-notes.md" not in expected_files:
         raise ValueError("GitHub release publication requires bundled release-notes.md")
-    allowed_files = artifact_files | {"pyproject.toml"}
-    if "release-notes.md" in expected_files:
-        allowed_files.add("release-notes.md")
-    if unexpected_files := set(expected_files) - allowed_files:
-        raise ValueError(f"unexpected release bundle members: {sorted(unexpected_files)}")
-    if missing_files := allowed_files - set(expected_files):
-        raise ValueError(f"missing release bundle members: {sorted(missing_files)}")
     manifest: ReleaseManifest = {
         "schema_version": schema,
         "source": {"commit": commit, "tag": tag, "dirty": dirty},

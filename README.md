@@ -108,7 +108,7 @@ Both GHA publishing jobs consume the bundle without a source checkout. Source di
 nopt workflow-template --output .github/workflows/release.yml
 ```
 
-The command refuses to overwrite an existing file. Without `--output`, it prints the template. Replace the failing `<your CI goes here>` placeholder with your CI. The template uses tag triggers, full checkout history, separate jobs and 90-day artifact retention. The build job records the immutable artifact ID; downstream jobs download that exact ID rather than resolving an artifact name again. Edit the template directly; generation has no persistent TOML options.
+The command refuses to overwrite an existing file. Without `--output`, it prints the template. The CI job calls `.github/workflows/test.yml`; change that path to `ci.yml` or your project's CI workflow as needed, and enable its `workflow_call` trigger. Release commands use uv's default Python selection with nopt's Python requirement. The template uses tag triggers, full checkout history, separate jobs and 90-day artifact retention. The build job records the immutable artifact ID; downstream jobs download that exact ID rather than resolving an artifact name again. Edit the template directly; generation has no persistent TOML options.
 
 Before enabling publication:
 
@@ -117,7 +117,7 @@ Before enabling publication:
 - Register the repository/workflow/environment as a PyPI Trusted Publisher.
 - For TestPyPI, set `repository = "testpypi"`, use the TestPyPI environment/publisher, and set the publishing action's TestPyPI upload URL.
 
-Generation does not change settings. Keep distributions passed to the upload action in a separate copy so generated attestations do not mutate the original verified bundle. The template archives that publication directory as evidence, including on upload failure. Only the publisher has `id-token: write`; only the GitHub release job has `contents: write`.
+Generation does not change settings. The upload action can add attestation sidecars to the publishing job's disposable bundle download. The stored build artifact remains unchanged; the GitHub release job downloads it afresh by artifact ID. The template archives the publishing directory, including generated attestations, as evidence even on upload failure. Only the publisher has `id-token: write`; only the GitHub release job has `contents: write`.
 
 ## Limits and deferred recovery
 

@@ -128,7 +128,7 @@ def test_template_refuses_overwrite(tmp_path: Path) -> None:
     """Generate a workflow template without replacing an existing file."""
     path = tmp_path / "release.yml"
     assert main(["workflow-template", "--output", str(path)]) == 0
-    assert "<your CI goes here>" in path.read_text(encoding="utf-8")
+    assert path.read_text(encoding="utf-8").strip()
     with pytest.raises(FileExistsError):
         main(["workflow-template", "--output", str(path)])
     return

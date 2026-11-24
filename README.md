@@ -117,7 +117,7 @@ Before enabling publication:
 - Register the repository/workflow/environment as a PyPI Trusted Publisher.
 - For TestPyPI, set `repository = "testpypi"`, use the TestPyPI environment/publisher, and set the publishing action's TestPyPI upload URL.
 
-Generation does not change settings. Keep distributions passed to the upload action in a separate copy so generated attestations do not mutate the original verified bundle. The template archives that publication directory as evidence, including on upload failure. Only the publisher has `id-token: write`; only the GitHub release job has `contents: write`.
+Generation does not change settings. The upload action can add attestation sidecars to the publishing job's disposable bundle download. The stored build artifact remains unchanged; the GitHub release job downloads it afresh by artifact ID. The template archives the publishing directory, including generated attestations, as evidence even on upload failure. Only the publisher has `id-token: write`; only the GitHub release job has `contents: write`.
 
 ## Limits and deferred recovery
 

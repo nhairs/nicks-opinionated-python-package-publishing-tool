@@ -69,7 +69,7 @@ Exactly one matching level-two section is required and the complete section is u
 | Actions upload / approval / download | Preserve the original bundle and gate publishing |
 | `nopt publish-release-preflight --bundle PATH` | Verify bundle integrity and current commit/tag/workflow identity, then recheck index absence and live GitHub state |
 | PyPA publishing action | OIDC authentication, attestations and PyPI/TestPyPI upload |
-| `nopt publish-github-release --bundle PATH` | If configured, wait for exact PyPI filenames/hashes, then publish the GitHub release and original assets |
+| `nopt publish-github-release --bundle PATH` | If configured, wait for exact PyPI filenames and hashes, then publish the GitHub release with the original distributions and their checksums |
 
 GitHub latest marking uses Git tag refs, not index versions, tag dates or GitHub release creation order. Only the greatest canonical final-version v-prefixed tag is eligible; older maintenance versions and all dev/pre releases use make_latest=false. Unsupported tags are ignored. The current final tag must appear in the reference snapshot. GitHub publication reads matching tag refs from the repository's Git database API, so this decision has no PyPI dependency. GitHub-only publication remains future planning; the current command still verifies the preceding index upload.
 
@@ -121,10 +121,14 @@ Generation does not change settings. The upload action can add attestation sidec
 
 ## Limits and deferred recovery
 
-GitHub publication creates an internal draft, uploads every verified original asset,
-refreshes the live tag and latest ranking, then publishes the draft. Assets are in
-place before publication makes an immutable release permanent. Checks-only makes
-no draft or uploads.
+GitHub publication creates a draft from the bundled release notes and attaches the
+original wheel, sdist, and a `SHA256SUMS` file for those two distributions. With all
+three assets in the same directory, run `sha256sum -c SHA256SUMS` to verify the
+distributions. The workflow artifact retains the full release bundle.
+
+After uploading the assets, nopt refreshes the live tag and latest ranking, then
+publishes the draft. Assets are in place before publication makes an immutable
+release permanent. Checks-only makes no draft or uploads.
 
 Existing published or visible draft GitHub releases for the tag cause failure. Automatic release/asset reconciliation and partial PyPI upload recovery are deferred. If draft creation succeeds but an upload or pre-publication check fails, the draft is left unpublished. An unsuccessful or unconfirmed final publication request can leave uncertain remote state; inspect it manually. A retry fails if either the draft or published release exists. An owner must review the original evidence and handle recovery manually. Do not rebuild or re-upload a published version. Expired Actions artifacts limit recovery; retain original bytes/evidence separately when needed. The initial template also binds bundles to a run attempt and does not implement failed-job rerun recovery; do not use reruns to attempt another package upload. Same-tag workflow runs are serialized without automatic cancellation.
 

@@ -106,12 +106,11 @@ def github_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[APIState]:
             return
 
         def do_PATCH(self) -> None:
-            """Publish only after every original asset has been uploaded."""
+            """Publish the draft after assets have been uploaded."""
             state.requests.append(("PATCH", self.path))
             assert self.path == "/repos/owner/repo/releases/7"
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             assert payload == {"draft": False, "make_latest": "true"}
-            assert len(state.assets) == 6
             assert state.release is not None
             state.release.update(
                 draft=state.publish_stays_draft,
@@ -219,16 +218,28 @@ def publish_arguments(release_bundle: Path, state: APIState, check_only: bool = 
 
 
 def test_draft_upload_then_publish(tmp_path: Path, github_api: APIState) -> None:
-    """Publish after all original assets, with tag/latest checks after upload."""
+    """Publish the original distributions and their checksums from an intact bundle."""
     release_bundle = checked_release_bundle(tmp_path / "release-bundle")
-    result = execute(build_parser().parse_args(publish_arguments(release_bundle, github_api)))
-    assert result["assets"] == 6
-    assert github_api.release and github_api.release["draft"] is False
-    assert github_api.assets == {
-        path.name: path.read_bytes() for path in release_bundle.rglob("*") if path.is_file()
+    original_files = {
+        path: path.read_bytes() for path in release_bundle.rglob("*") if path.is_file()
     }
+    result = execute(build_parser().parse_args(publish_arguments(release_bundle, github_api)))
+    assert result["assets"] == 3
+    assert github_api.release and github_api.release["draft"] is False
+    wheel = release_bundle / "dist/fixture-1.2.3-py3-none-any.whl"
+    sdist = release_bundle / "dist/fixture-1.2.3.tar.gz"
+    wheel_digest = hashlib.sha256(original_files[wheel]).hexdigest()
+    sdist_digest = hashlib.sha256(original_files[sdist]).hexdigest()
+    assert github_api.assets == {
+        wheel.name: original_files[wheel],
+        sdist.name: original_files[sdist],
+        "SHA256SUMS": f"{wheel_digest}  {wheel.name}\n{sdist_digest}  {sdist.name}\n".encode(),
+    }
+    assert {
+        path: path.read_bytes() for path in release_bundle.rglob("*") if path.is_file()
+    } == original_files
     methods = [method for method, _ in github_api.requests]
-    assert methods.count("POST") == 7
+    assert methods.count("POST") == 4
     assert methods[-3:] == ["GET", "GET", "PATCH"]
     return
 

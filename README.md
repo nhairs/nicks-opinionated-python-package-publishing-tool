@@ -108,7 +108,7 @@ Both GHA publishing jobs consume the bundle without a source checkout. Source di
 nopt workflow-template --output .github/workflows/release.yml
 ```
 
-The command refuses to overwrite an existing file. Without `--output`, it prints the template. Replace the failing `<your CI goes here>` placeholder with your CI. The template uses tag triggers, full checkout history, separate jobs and 90-day artifact retention. The build job records the immutable artifact ID; downstream jobs download that exact ID rather than resolving an artifact name again. Edit the template directly; generation has no persistent TOML options.
+The command refuses to overwrite an existing file. Without `--output`, it prints the template. The CI job calls `.github/workflows/test.yml`; change that path to `ci.yml` or your project's CI workflow as needed, and enable its `workflow_call` trigger. Release commands use uv to select Python 3.13. The template uses tag triggers, full checkout history, separate jobs and 90-day artifact retention. The build job records the immutable artifact ID; downstream jobs download that exact ID rather than resolving an artifact name again. Edit the template directly; generation has no persistent TOML options.
 
 Before enabling publication:
 

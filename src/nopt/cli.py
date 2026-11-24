@@ -267,16 +267,17 @@ def publish_github(
             "prerelease": config.release_type != "final",
         }
     )
-    assets = [p for p in args.release_bundle.rglob("*") if p.is_file()]
-    for path in sorted(assets):
-        github.upload_asset(release_id, path)
+    for name in sorted(expected):
+        github.upload_asset(release_id, name, (args.release_bundle / "dist" / name).read_bytes())
+    checksums = "".join(f"{digest}  {name}\n" for name, digest in sorted(expected.items()))
+    github.upload_asset(release_id, "SHA256SUMS", checksums.encode("utf-8"))
     # Uploads can take time too. Recheck the tag and latest ranking immediately
     # before publication. Upload/check failures leave a draft; an unconfirmed
     # publication request requires manual inspection of the remote state.
     github.check_tag(data["source"]["tag"], data["source"]["commit"])
     latest = github.is_latest_final(config.version)
     release_url = github.publish_draft_release(release_id, latest)
-    return {"github_release": release_url, "assets": len(assets)}
+    return {"github_release": release_url, "assets": len(expected) + 1}
 
 
 def execute(args: argparse.Namespace) -> dict[str, str | int | bool]:

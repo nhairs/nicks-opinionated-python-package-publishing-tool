@@ -3,7 +3,6 @@
 from collections.abc import Mapping
 import json
 import os
-from pathlib import Path
 import time
 from urllib.error import HTTPError
 from urllib.parse import quote
@@ -105,22 +104,20 @@ class GitHubClient:
             github=True,
         )
 
-    def upload_asset(self, release_id: int, path: Path) -> None:
-        """Attach one original bundle file and require a completed upload."""
+    def upload_asset(self, release_id: int, name: str, data: bytes) -> None:
+        """Attach one named asset and require a completed upload."""
         if self.repository is None:
             raise ValueError("GitHub repository identity is required")
         result = request(
             f"https://uploads.github.com/repos/{self.repository}"
-            f"/releases/{release_id}/assets?name={quote(path.name, safe='')}",
+            f"/releases/{release_id}/assets?name={quote(name, safe='')}",
             "POST",
-            path.read_bytes(),
+            data,
             github=True,
             content_type="application/octet-stream",
         )
         if not isinstance(result, dict) or result.get("state") != "uploaded":
-            raise ValueError(
-                f"GitHub asset upload did not complete: {path.name}; recovery is deferred"
-            )
+            raise ValueError(f"GitHub asset upload did not complete: {name}; recovery is deferred")
         return
 
     def check_tag(self, tag: str, commit: str) -> None:

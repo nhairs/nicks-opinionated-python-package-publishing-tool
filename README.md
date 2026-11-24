@@ -9,12 +9,12 @@ This initial implementation requires Python 3.11+ and a Python project in a Git 
 Run the published package with uv (Python 3.11 or later):
 
 ```sh
-uvx --from 'nopt==0.1.0.dev0' nopt --help
+uvx --from 'nopt==0.1.0' nopt --help
 ```
 
 The workflow template uses the same pinned PyPI version in every job. When upgrading nopt, update all four command pins together and review the pinned action references before enabling production publishing.
 
-For repeated local use, install it with `uv tool install 'nopt==0.1.0.dev0'`, then run `nopt` directly.
+For repeated local use, install it with `uv tool install 'nopt==0.1.0'`, then run `nopt` directly.
 
 ## Configure a project
 

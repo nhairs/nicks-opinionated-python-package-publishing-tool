@@ -145,7 +145,13 @@ def test_branch_query_error(project: Path, tmp_path: Path) -> None:
     return
 
 
-@pytest.mark.parametrize("target", ["HEAD:README.md", "refs/tags/annotation"])
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("HEAD:README.md", id="blob"),
+        pytest.param("refs/tags/annotation", id="annotated-tag"),
+    ],
+)
 def test_non_commit_remote_ref_does_not_qualify(project: Path, target: str) -> None:
     """Ignore blob refs and annotated tags stored under the remote-tracking namespace."""
     subprocess.run(

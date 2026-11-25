@@ -43,31 +43,46 @@ def git(root: Path, *args: str, allow_lazy_fetch: bool = True) -> str:
     """Run a read-only Git query."""
     env = None if allow_lazy_fetch else {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
     return subprocess.check_output(
-        ["git", *args], cwd=root, text=True, stderr=subprocess.PIPE, timeout=60, env=env
+        ["git", *args],
+        cwd=root,
+        encoding="utf-8",
+        errors="surrogateescape",
+        stderr=subprocess.PIPE,
+        timeout=60,
+        env=env,
     ).strip()
 
 
+def _matches_branch(branch: str, selector: str) -> bool:
+    if not selector.endswith("*"):
+        return branch == selector
+    prefix = selector[:-1]
+    return branch.startswith(prefix) and "/" not in branch[len(prefix) :]
+
+
 def check_branches(root: Path, config: Config, context: Context, commit: str) -> None:
-    """Require ancestry from any existing allowed branch, never branch-tip equality."""
+    """Require a concrete allowed branch that contains the release commit."""
     branches = getattr(config, f"{config.release_type}_release_branches")
     if branches is False:
         return
-    for branch in branches:
-        ref = f"refs/heads/{branch}" if context.local else f"refs/remotes/origin/{branch}"
-        exists = subprocess.run(
-            ["git", "show-ref", "--verify", "--quiet", ref], cwd=root, check=False
-        )
-        if exists.returncode == 1:
+    namespace = "refs/heads/" if context.local else "refs/remotes/origin/"
+    listing = git(
+        root,
+        "for-each-ref",
+        f"--contains={commit}",
+        "--format=%(refname)%00%(symref)%00%(objecttype)",
+        namespace,
+        allow_lazy_fetch=False,
+    )
+    for line in listing.split("\n"):
+        if not line.startswith(namespace):
             continue
-        if exists.returncode != 0:
-            raise ValueError(f"unable to resolve branch {ref}")
-        status = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", commit, ref], cwd=root, check=False
-        )
-        if status.returncode == 0:
+        ref, symbolic_target, object_type = line.split("\0")
+        if symbolic_target or object_type != "commit":
+            continue
+        branch = ref.removeprefix(namespace)
+        if any(_matches_branch(branch, selector) for selector in branches):
             return
-        if status.returncode != 1:
-            raise ValueError(f"unable to establish ancestry for {ref}")
     raise ValueError("release commit is not reachable from any existing allowed branch")
 
 

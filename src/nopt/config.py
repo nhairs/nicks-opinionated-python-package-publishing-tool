@@ -103,18 +103,8 @@ def validate(config: Config) -> Config:  # pylint: disable=too-many-branches
             continue
         if not isinstance(branches, (tuple, list)) or not branches:
             raise ValueError(f"{group}-release-branches must be a nonempty branch list")
-        for branch in branches:
-            if (
-                not isinstance(branch, str)
-                or not branch
-                or any(
-                    token in branch
-                    for token in ("*", "?", "[", "..", "@{", "\\", " ", ":", "~", "^", "\n", "\r")
-                )
-                or branch.startswith(("-", "/", "."))
-                or branch.endswith(("/", ".", ".lock"))
-            ):
-                raise ValueError("branches must be literal valid Git branch names, without globs")
+        for selector in branches:
+            _validate_branch_selector(selector, group)
     if not isinstance(config.github_release_publish, bool):
         raise ValueError("github-release-publish must be boolean")
     if config.github_release_requested and config.changelog is False:
@@ -135,6 +125,34 @@ def validate(config: Config) -> Config:  # pylint: disable=too-many-branches
             for key, value in vars(config).items()
         },
     )
+
+
+def _validate_branch_selector(selector: object, group: str) -> None:
+    error = (
+        f"{group}-release-branches contains an invalid selector {selector!r}. "
+        "Use a valid Git branch name or a nonempty prefix followed by a single trailing '*'."
+    )
+    if not isinstance(selector, str) or selector == "*":
+        raise ValueError(error)
+    pattern = selector.endswith("*")
+    branch = selector[:-1] + "x" if pattern else selector
+    if (
+        not branch
+        or any(
+            token in branch
+            for token in ("*", "?", "[", "..", "@{", "\\", " ", ":", "~", "^", "\n", "\r")
+        )
+        or branch.startswith(("-", "/", "."))
+        or branch.endswith(("/", ".", ".lock"))
+    ):
+        raise ValueError(error)
+    if pattern and (
+        re.search(r"[\x00-\x1f\x7f]", branch)
+        or any(
+            not part or part.startswith(".") or part.endswith(".lock") for part in branch.split("/")
+        )
+    ):
+        raise ValueError(error)
 
 
 def load(root: Path, overrides: Mapping[str, object] | None = None) -> Config:

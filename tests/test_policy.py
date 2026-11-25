@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from dataclasses import replace
+import json
 import tomllib
 import pytest
 
@@ -56,6 +57,10 @@ def test_rejected_versions(version: str) -> None:
 
 def test_defaults_and_explicit_false(project: Path) -> None:
     """Preserve explicit CLI false and empty values ahead of configuration defaults."""
+    defaults = load(project)
+    assert defaults.final_release_branches == ("main",)
+    assert defaults.pre_release_branches == ("main",)
+    assert defaults.dev_release_branches is False
     args = build_parser().parse_args(
         [
             "build",
@@ -64,14 +69,65 @@ def test_defaults_and_explicit_false(project: Path) -> None:
             "--no-github-release-publish",
             "--allow-dirty",
             "--no-pre-release-branches",
+            "--no-dev-release-branches",
         ]
     )
     config = load(project, get_cli_config_overrides(args))
     assert config.changelog is False
     assert config.github_release_publish is False
     assert config.pre_release_branches is False
+    assert config.dev_release_branches is False
     assert config.allow_dirty == ()
     assert get_cli_config_overrides(build_parser().parse_args(["build", "--local"])) == {}
+    return
+
+
+@pytest.mark.parametrize("group", ["final", "pre", "dev"])
+def test_branch_selectors_from_toml_and_cli(project: Path, group: str) -> None:
+    """Load mixed policies from TOML and let the corresponding CLI option replace them."""
+    with (project / "pyproject.toml").open("a", encoding="utf-8") as stream:
+        stream.write(f'{group}-release-branches = ["main", "release/1.*"]\n')
+    setting = f"{group}_release_branches"
+    assert getattr(load(project), setting) == ("main", "release/1.*")
+    args = build_parser().parse_args(
+        ["build", "--local", f"--{group}-release-branches", "stable", "maintenance/*"]
+    )
+    assert getattr(load(project, get_cli_config_overrides(args)), setting) == (
+        "stable",
+        "maintenance/*",
+    )
+    return
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "",
+        "*",
+        "re*lease/v",
+        "release/v**",
+        "release/v?*",
+        "release/[12]*",
+        "release/../v*",
+        "release//v*",
+        "release/.hidden/v*",
+        "release/.hidden*",
+        "release.lock/v*",
+        "release/with\ttab*",
+        "-release/v*",
+        "invalid branch",
+        "literal.lock",
+    ],
+)
+def test_invalid_branch_selectors(project: Path, selector: str) -> None:
+    """Reject invalid branch selectors at the shared policy boundary."""
+    with (project / "pyproject.toml").open("a", encoding="utf-8") as stream:
+        stream.write(f"final-release-branches = [{json.dumps(selector)}]\n")
+    with pytest.raises(ValueError, match="invalid selector"):
+        load(project)
+    args = build_parser().parse_args(["build", "--local", f"--final-release-branches={selector}"])
+    with pytest.raises(ValueError, match="invalid selector"):
+        load(project, get_cli_config_overrides(args))
     return
 
 
@@ -82,7 +138,6 @@ def test_defaults_and_explicit_false(project: Path) -> None:
         {"final_release_branches": []},
         {"dev_release_branches": []},
         {"pre_release_branches": []},
-        {"pre_release_branches": ["release/*"]},
         {"changelog": True},
         {"github_release_types": ["stable"]},
         {"allow_dirty": False},

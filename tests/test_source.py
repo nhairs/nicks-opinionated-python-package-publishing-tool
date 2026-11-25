@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 from nopt.config import load
-from nopt.source import Context, identity, is_latest_final
+from nopt.source import Context, check_branches, git, identity, is_latest_final
 from tests.helpers import inventory
 
 
@@ -36,9 +36,10 @@ def test_untracked_changes(project: Path) -> None:
     return
 
 
-def test_local_and_remote_branch_rules(project: Path) -> None:
+@pytest.mark.parametrize("selector", ["main", "ma*", "main*"])
+def test_local_and_remote_branch_rules(project: Path, selector: str) -> None:
     """Check local or remote ancestry without requiring the release commit to be the tip."""
-    config = replace(load(project), dev_release_branches=("main",))
+    config = replace(load(project), dev_release_branches=(selector,))
     original = identity(project, config, Context(True))["commit"]
     # A newer main tip must still permit the older tagged commit.
     subprocess.run(
@@ -76,8 +77,98 @@ def test_moved_tag_rejected(project: Path) -> None:
 
 def test_any_allowed_branch_can_satisfy_policy(project: Path) -> None:
     """Accept ancestry through an existing allowed branch despite another missing branch."""
-    config = replace(load(project), dev_release_branches=("missing", "main"))
+    config = replace(load(project), dev_release_branches=("missing", "release/1.*", "main"))
     assert identity(project, config, Context(True))["dirty"] is False
+    return
+
+
+@pytest.mark.parametrize(
+    "ref,symbolic",
+    [
+        ("refs/remotes/origin/release/1.6/hotfix", False),
+        ("refs/remotes/origin/Release/1.6", False),
+        ("refs/remotes/origin/release/1.alias", True),
+        ("refs/remotes/upstream/release/1.6", False),
+        ("refs/tags/release/1.6", False),
+        ("refs/pull/release/1.6", False),
+    ],
+)
+def test_pattern_excludes_ineligible_remote_refs(project: Path, ref: str, symbolic: bool) -> None:
+    """Exclude nested names, case mismatches, symbolic refs, and other namespaces."""
+    args = ("symbolic-ref", ref, "refs/heads/main") if symbolic else ("update-ref", ref, "HEAD")
+    subprocess.run(["git", *args], cwd=project, check=True)
+    config = replace(load(project), dev_release_branches=("release/1.*",))
+    with pytest.raises(ValueError, match="reachable"):
+        identity(project, config, Context(False))
+    return
+
+
+@pytest.mark.parametrize("selector", ["H*", "HEAD"])
+def test_remote_head_alias_does_not_qualify(project: Path, selector: str) -> None:
+    """Require a concrete branch when a policy matches the origin/HEAD alias."""
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=project, check=True
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=project,
+        check=True,
+    )
+    config = replace(load(project), dev_release_branches=(selector,))
+    with pytest.raises(ValueError, match="reachable"):
+        identity(project, config, Context(False))
+    return
+
+
+def test_pattern_requires_ancestry_in_selected_namespace(project: Path) -> None:
+    """Reject a divergent local branch even when its remote-tracking peer qualifies."""
+    divergent = subprocess.check_output(
+        ["git", "commit-tree", "HEAD^{tree}", "-m", "Unrelated root"], cwd=project, text=True
+    ).strip()
+    subprocess.run(["git", "branch", "release/1.6", divergent], cwd=project, check=True)
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/release/1.6", "HEAD"], cwd=project, check=True
+    )
+    config = replace(load(project), dev_release_branches=("release/1.*",))
+    with pytest.raises(ValueError, match="reachable"):
+        identity(project, config, Context(True))
+    assert identity(project, config, Context(False))["commit"] == git(project, "rev-parse", "HEAD")
+    return
+
+
+def test_branch_query_error(project: Path, tmp_path: Path) -> None:
+    """Surface a failed Git containment query independently of ordinary non-matches."""
+    config = replace(load(project), dev_release_branches=("release/1.*",))
+    commit = git(project, "rev-parse", "HEAD")
+    with pytest.raises(subprocess.CalledProcessError, match="for-each-ref"):
+        check_branches(tmp_path, config, Context(False), commit)
+    return
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        pytest.param("HEAD:README.md", id="blob"),
+        pytest.param("refs/tags/annotation", id="annotated-tag"),
+    ],
+)
+def test_non_commit_remote_ref_does_not_qualify(project: Path, target: str) -> None:
+    """Ignore blob refs and annotated tags stored under the remote-tracking namespace."""
+    subprocess.run(
+        ["git", "tag", "-a", "annotation", "-m", "Tag on release commit"], cwd=project, check=True
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/release/1.bad", target], cwd=project, check=True
+    )
+    config = replace(load(project), dev_release_branches=("release/1.*",))
+    with pytest.raises(ValueError, match="reachable"):
+        identity(project, config, Context(False))
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/release/1.good", "HEAD"],
+        cwd=project,
+        check=True,
+    )
+    assert identity(project, config, Context(False))["commit"] == git(project, "rev-parse", "HEAD")
     return
 
 

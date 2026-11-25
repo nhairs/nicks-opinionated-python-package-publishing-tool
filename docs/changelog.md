@@ -4,6 +4,7 @@
 
 ### Added
 
+- Allow release branch policies to use a trailing wildcard, such as `release/1.*`, to select maintenance branches.
 - Verify the embedded Git commit in the wheel and source distribution at build time for projects that opt in to `setuptools-git-metadata`.
 - Include build Git metadata in nopt's own distributions.
 

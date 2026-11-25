@@ -2,6 +2,10 @@
 
 ## [0.2.0](https://github.com/nhairs/nicks-opinionated-python-package-publishing-tool/compare/v0.1.0...v0.2.0) - UNRELEASED
 
+### Added
+
+- Verify the embedded Git commit in the wheel and source distribution at build time for projects that opt in to `setuptools-git-metadata`.
+
 ### Changed
 
 - Attach the wheel, source distribution, and a `SHA256SUMS` file covering those two files to each GitHub release. Use the bundled changelog notes as the release body and retain the full release bundle in Actions.

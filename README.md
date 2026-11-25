@@ -88,7 +88,7 @@ nopt build --local --output /absolute/path/to/new-bundle
 nopt publish-release-preflight --local --bundle /absolute/path/to/new-bundle
 ```
 
-Local mode derives project/version/commit from the checkout and the expected tag from the version. `--project PATH` selects another checkout; `--tag` is local-only and must identify the same existing canonical tag pointing to HEAD. Local mode checks local branches without fetching. GHA checks fetched repository branches and requires matching `GITHUB_REF`, `GITHUB_SHA`, repository, run ID and attempt. Local package preflight requires both HEAD and the tag recorded in the bundle to resolve to the bundle's commit. It uses local Git data without fetching. Policy and notes come from the bundle. A local bundle is not accepted for GHA publishing. Local GitHub release publishing is not supported.
+Local mode derives project/version/commit from the checkout and the expected tag from the version. `--project PATH` selects another checkout; `--tag` is local-only and must identify the same existing canonical tag pointing to HEAD. Local mode checks local branches without fetching. GHA checks fetched repository branches and binds the release bundle to the repository, run ID, `GITHUB_REF`, and `GITHUB_SHA`. Local package preflight requires both HEAD and the tag recorded in the bundle to resolve to the bundle's commit. It uses local Git data without fetching. Policy and notes come from the bundle. A local bundle is not accepted for GHA publishing. Local GitHub release publishing is not supported.
 
 Builds run directly from the checkout with the project's configured backend. Build-dependency isolation and the frontend's default sdist-then-wheel behavior remain enabled. Backend-generated files such as build/ or egg-info should be ignored by the client project's Git rules. Nopt neither copies the source tree nor excludes directories itself.
 
@@ -136,7 +136,15 @@ After uploading the assets, nopt refreshes the live tag and latest ranking, then
 publishes the draft. Assets are in place before publication makes an immutable
 release permanent. Checks-only makes no draft or uploads.
 
-Existing published or visible draft GitHub releases for the tag cause failure. Automatic release/asset reconciliation and partial PyPI upload recovery are deferred. If draft creation succeeds but an upload or pre-publication check fails, the draft is left unpublished. An unsuccessful or unconfirmed final publication request can leave uncertain remote state; inspect it manually. A retry fails if either the draft or published release exists. An owner must review the original evidence and handle recovery manually. Do not rebuild or re-upload a published version. Expired Actions artifacts limit recovery; retain original bytes/evidence separately when needed. The initial template also binds bundles to a run attempt and does not implement failed-job rerun recovery; do not use reruns to attempt another package upload. Same-tag workflow runs are serialized without automatic cancellation.
+Existing published or visible draft GitHub releases for the tag cause failure. Automatic release/asset reconciliation and partial PyPI upload recovery are deferred. If draft creation succeeds but an upload or pre-publication check fails, the draft is left unpublished. An unsuccessful or unconfirmed final publication request can leave uncertain remote state; inspect it manually. A retry fails if either the draft or published release exists. An owner must review the original evidence and handle recovery manually. Do not rebuild or re-upload a published version. Expired Actions artifacts limit recovery; retain original bytes/evidence separately when needed. Same-tag workflow runs are serialized without automatic cancellation.
+
+Publication jobs download the exact artifact ID from the build job output. A
+job-only rerun can reuse that bundle within the same workflow run. The manifest
+records the attempt that built the bundle. A full rerun builds a new bundle if
+preflight passes. Before retrying package upload, confirm the version is absent
+from the index. If both distributions are already present, retry only GitHub
+finalization with the original bundle. Nopt checks the index filenames and hashes
+and requires that GitHub have no release or draft for the tag.
 
 Backend-specific source selection is delegated to the backend through python-build. Nopt does not calculate a source-file fingerprint or promise that backend builds leave the checkout untouched. Build hooks run project code; only run nopt on trusted projects. No production package migrations are included.
 
@@ -161,8 +169,3 @@ For that target, omitted, empty, whitespace, boolean and other non-string values
 validation before build or publication checks.
 For PyPI the username is ignored, so one project configuration can keep the
 TestPyPI suffix ready without renaming production distributions.
-
-The current workflow binding includes the build attempt number. Re-running only
-a publication job with an earlier attempt's bundle is rejected even within the
-same workflow run. Publish-only rerun support remains part of deferred recovery
-planning; nopt does not silently rebuild or reuse a partially published release.

@@ -288,8 +288,11 @@ def test_draft_collision_pagination(github_api: APIState) -> None:
     return
 
 
-def test_publication_check_only_makes_no_draft(tmp_path: Path, github_api: APIState) -> None:
-    """Run the same publication eligibility checks without any writes."""
+def test_publication_check_only_makes_no_draft(
+    tmp_path: Path, github_api: APIState, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Check an earlier attempt's bundle against the index without any writes."""
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
     release_bundle = checked_release_bundle(tmp_path / "release-bundle")
     result = execute(build_parser().parse_args(publish_arguments(release_bundle, github_api, True)))
     assert result == {"checked": "publish-github-release", "latest": True}

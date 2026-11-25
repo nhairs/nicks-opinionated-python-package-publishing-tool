@@ -424,6 +424,47 @@ def test_publish_bundle_needs_no_checkout(
     return
 
 
+@pytest.mark.parametrize("annotated", [False, True])
+def test_local_publish_preflight_rechecks_tag(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, annotated: bool
+) -> None:
+    """Require the original local tag even when HEAD and the remote tag still match."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.setattr("nopt.cli.PyPIClient.index", lambda *_args: None)
+    config = load(project)
+    tag = f"v{config.version}"
+    if annotated:
+        subprocess.run(["git", "tag", "-af", tag, "-m", "Release"], cwd=project, check=True)
+    context = Context(True)
+    source = identity(project, config, context)
+    bundle = tmp_path / "bundle"
+    build_release_bundle(project, bundle, config, context, source, release_notes(project, config))
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "clone", "--bare", str(project), str(origin)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(origin)], cwd=project, check=True)
+    arguments = [
+        "publish-release-preflight",
+        "--local",
+        "--project",
+        str(project),
+        "--bundle",
+        str(bundle),
+    ]
+    assert main(arguments) == 0
+
+    other_commit = subprocess.check_output(
+        ["git", "commit-tree", "HEAD^{tree}", "-m", "Other commit"], cwd=project, text=True
+    ).strip()
+    subprocess.run(["git", "tag", "-f", tag, other_commit], cwd=project, check=True)
+    with pytest.raises(ValueError, match="local release tag .* no longer points to"):
+        main(arguments)
+
+    subprocess.run(["git", "tag", "-d", tag], cwd=project, check=True)
+    with pytest.raises(ValueError, match="unable to resolve local release tag .* to a commit"):
+        main(arguments)
+    return
+
+
 @pytest.mark.parametrize("option", ["--help", "--version"])
 def test_cli_information_needs_no_project(tmp_path: Path, option: str) -> None:
     """Expose program identity without requiring checkout, bundle or GHA context."""

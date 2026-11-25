@@ -176,7 +176,8 @@ def check_bundle_context(data: Mapping[str, object], execution: Context) -> None
         raise ValueError("bundle context must be an object")
     if execution.local:
         return
-    for key in ("github_repository", "run_id", "run_attempt"):
+    # The build job output can select an earlier attempt's artifact on a job rerun.
+    for key in ("github_repository", "run_id"):
         if original.get(key) != getattr(execution, key):
             raise ValueError(f"bundle belongs to a different workflow {key}")
     if original.get("local") is not False:

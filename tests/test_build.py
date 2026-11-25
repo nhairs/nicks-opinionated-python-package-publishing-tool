@@ -112,7 +112,7 @@ def test_checkout_build_and_bundle(
 
 
 def test_context_binding() -> None:
-    """Reject a bundle originating from a different workflow attempt."""
+    """Reuse a bundle from an earlier attempt of the same workflow run."""
     data = {
         "context": {
             "local": False,
@@ -124,9 +124,16 @@ def test_context_binding() -> None:
     check_bundle_context(
         data, Context(False, github_repository="owner/repo", run_id="1", run_attempt="1")
     )
-    with pytest.raises(ValueError, match="run_attempt"):
+    check_bundle_context(
+        data, Context(False, github_repository="owner/repo", run_id="1", run_attempt="2")
+    )
+    with pytest.raises(ValueError, match="different workflow run_id"):
         check_bundle_context(
-            data, Context(False, github_repository="owner/repo", run_id="1", run_attempt="2")
+            data, Context(False, github_repository="owner/repo", run_id="2", run_attempt="2")
+        )
+    with pytest.raises(ValueError, match="different workflow github_repository"):
+        check_bundle_context(
+            data, Context(False, github_repository="owner/other", run_id="1", run_attempt="2")
         )
     return
 

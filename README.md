@@ -41,7 +41,13 @@ CLI policy options override TOML, which overrides defaults. Boolean false and em
 
 Accepted versions are exactly canonical `X.Y.Z`, `X.Y.Z.devN`, `X.Y.ZaN`, `X.Y.ZbN`, or `X.Y.ZrcN`. Alternatives such as `1.2.3.rc1` are rejected. Epochs, local versions, post releases, compound suffixes and two-component versions are rejected. Release tags must be `v<version>` and point to the current HEAD. Nopt never creates or moves tags.
 
-A restricted release group requires the commit to be reachable from at least one configured branch; it need not be the latest commit. Names are literal, with no globs. Empty branch lists are invalid. Final releases always require a restriction; pre/dev accept explicit false. A detached checkout is valid.
+A restricted release group requires the tagged commit to be reachable from at least one existing branch selected by its policy. A detached checkout is valid. Every branch list must be nonempty. Prerelease and development policies can use `false` to allow any branch. Final releases always require a branch list.
+
+Each list can mix literal names and patterns with one trailing `*` after a nonempty prefix. The wildcard matches zero or more characters within the final branch-name component. Matching is case-sensitive. For example, `release/1.*` matches `release/1.5` and `release/1.6`. A branch such as `release/1.6/hotfix` needs a selector that includes its extra component. Local checks use local branches. GitHub Actions uses fetched `origin` remote-tracking branches. Only concrete branch refs qualify.
+
+Set `final-release-branches = ["main", "release/1.*"]` in `[tool.nopt]`, or pass `--final-release-branches main 'release/1.*'` on the command line. Quote the pattern so your shell passes it through unchanged. Use a version of nopt that supports patterns for all commands in the release workflow.
+
+New branches that match a pattern can authorize releases under the same ancestry rule. Control who can create or update matching branches through your repository settings.
 
 Dirty status comes directly from `git status --porcelain=v1 -z --untracked-files=all`. All tracked changes and nonignored untracked files in the checkout count, even when they are not packaged. Git's ignore rules determine what is ignored; nopt does not guess build/cache directories or inspect backend source manifests. Default dirty allowance is dev only. This is independent of tag-to-HEAD equality.
 

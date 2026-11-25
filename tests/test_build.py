@@ -9,6 +9,7 @@ import tarfile
 import zipfile
 import subprocess
 import sys
+from unittest.mock import Mock
 
 import pytest
 
@@ -20,6 +21,7 @@ from nopt.bundle import (
 )
 from nopt.changelog import release_notes
 from nopt.config import load
+from nopt.remote import PyPIClient
 from nopt.source import Context, identity
 from nopt.cli import check_bundle_context, check_publish_bundle, build_context, main, build_parser
 
@@ -146,6 +148,22 @@ def test_cli_requires_explicit_local_mode(project: Path, monkeypatch: pytest.Mon
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     with pytest.raises(ValueError, match="--local"):
         main(["ci-preflight", "--project", str(project)])
+    return
+
+
+@pytest.mark.parametrize("command", [["ci-preflight"], ["build", "--check-only"]])
+def test_source_commands_enforce_branch_patterns(
+    project: Path, monkeypatch: pytest.MonkeyPatch, command: list[str]
+) -> None:
+    """Apply the branch policy from both source commands with real Git refs."""
+    with (project / "pyproject.toml").open("a", encoding="utf-8") as stream:
+        stream.write('dev-release-branches = ["main", "release/v*"]\n')
+    monkeypatch.setattr(PyPIClient, "absent", Mock())
+    args = [*command, "--local", "--project", str(project), "--dev-release-branches", "release/v*"]
+    with pytest.raises(ValueError, match="reachable"):
+        main(args)
+    subprocess.run(["git", "branch", "release/v2-café"], cwd=project, check=True)
+    assert main(args) == 0
     return
 
 
@@ -377,8 +395,9 @@ def test_publish_bundle_needs_no_checkout(
     project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_notes: bool
 ) -> None:
     """Consume original inputs from the bundle alone and reject changed workflow identity."""
-    if not with_notes:
-        with (project / "pyproject.toml").open("a", encoding="utf-8") as stream:
+    with (project / "pyproject.toml").open("a", encoding="utf-8") as stream:
+        stream.write('dev-release-branches = ["ma*"]\n')
+        if not with_notes:
             stream.write("changelog = false\n")
     config = load(project)
     execution = Context(False, "v1.2.3.dev4", "owner/repo", "123", "1")

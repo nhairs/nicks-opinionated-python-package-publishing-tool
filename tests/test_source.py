@@ -136,16 +136,33 @@ def test_pattern_requires_ancestry_in_selected_namespace(project: Path) -> None:
     return
 
 
-def test_pattern_lookup_and_ancestry_errors(project: Path, tmp_path: Path) -> None:
-    """Surface Git query and ancestry failures independently of ordinary non-matches."""
+def test_branch_query_error(project: Path, tmp_path: Path) -> None:
+    """Surface a failed Git containment query independently of ordinary non-matches."""
     config = replace(load(project), dev_release_branches=("release/1.*",))
     commit = git(project, "rev-parse", "HEAD")
     with pytest.raises(subprocess.CalledProcessError, match="for-each-ref"):
         check_branches(tmp_path, config, Context(False), commit)
-    ref = "refs/remotes/origin/release/1.bad"
-    subprocess.run(["git", "update-ref", ref, "HEAD:README.md"], cwd=project, check=True)
-    with pytest.raises(ValueError, match=f"unable to establish ancestry for {ref}"):
+    return
+
+
+@pytest.mark.parametrize("target", ["HEAD:README.md", "refs/tags/annotation"])
+def test_non_commit_remote_ref_does_not_qualify(project: Path, target: str) -> None:
+    """Ignore blob refs and annotated tags stored under the remote-tracking namespace."""
+    subprocess.run(
+        ["git", "tag", "-a", "annotation", "-m", "Tag on release commit"], cwd=project, check=True
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/release/1.bad", target], cwd=project, check=True
+    )
+    config = replace(load(project), dev_release_branches=("release/1.*",))
+    with pytest.raises(ValueError, match="reachable"):
         identity(project, config, Context(False))
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/release/1.good", "HEAD"],
+        cwd=project,
+        check=True,
+    )
+    assert identity(project, config, Context(False))["commit"] == git(project, "rev-parse", "HEAD")
     return
 
 

@@ -98,7 +98,11 @@ Static project.name is still required, but alternate valid TOML spellings such a
 
 Output must be a new directory; if it is inside the checkout, it must be Git-ignored. Add release-bundle/ to .gitignore to use the default output path.
 
-The bundle contains `dist/` (wheel + sdist), the original `pyproject.toml`, optional `release-notes.md`, `release.json` and standard `SHA256SUMS`. `release-notes.md` holds the extracted changelog section used as the GitHub release body, so publication uses the same checked text as the build. Manifest hash keys are relative to the bundle root. Release identity binds original hashes, actual distribution identity, source commit/tag and pre-build dirty status, and GHA run identity when available. It does not save resolved configuration or CLI overrides. SHA256SUMS includes release.json; the GitHub artifact/run identity supplies the workflow trust boundary. Checksums alone are not signatures. The package does not inspect generated runtime `_version.py` or require setuptools-git-metadata.
+The bundle contains the wheel and sdist under `dist/`, the original `pyproject.toml`, optional `release-notes.md`, the `release.json` manifest, and its `release.json.sha256sum` checksum. Publishing verifies the manifest bytes before parsing them, then verifies the exact set of payload files and their checksums using paths relative to the bundle root. The GitHub artifact and workflow run supply the trust boundary for that handoff.
+
+The manifest records the original hashes, distribution identity, source commit and tag, pre-build dirty status, and GitHub Actions run identity when available. Publishing reloads the original project configuration and applies any CLI overrides for that invocation. GitHub uses the bundled changelog text as the release body. Nopt does not inspect generated runtime `_version.py` or require setuptools-git-metadata.
+
+For older bundles with the internal `SHA256SUMS` file, use the nopt version that built the bundle.
 
 Both GHA publishing jobs consume the bundle without a source checkout. Source dirty, branch and changelog checks and artifact metadata inspection are completed before bundling. Publishing checks bundle integrity and expected identity, then repeats only mutable external checks: existing index/release records, live tag refs, uploaded filenames/hashes and latest-final tag ranking. Local GitHub-release bundle acquisition remains deferred.
 

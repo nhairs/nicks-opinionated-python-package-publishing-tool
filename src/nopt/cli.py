@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 
 from .bundle import (
     ReleaseManifest,
@@ -204,24 +205,39 @@ def check_publish_bundle(
 def publish_preflight(
     args: argparse.Namespace, execution: Context, index: PyPIClient, github: GitHubClient
 ) -> dict[str, str | bool]:
-    """Trust checked bundle policy and repeat only mutable external-system checks."""
+    """Verify the bundle and recheck the release tag and publication state."""
+    project = args.project.resolve() if execution.local else None
     commit = (
-        git(args.project.resolve(), "rev-parse", "HEAD^{commit}")
-        if execution.local
+        git(project, "rev-parse", "HEAD^{commit}", allow_lazy_fetch=False)
+        if project is not None
         else os.environ.get("GITHUB_SHA", "")
     )
     data, config = check_publish_bundle(
         args.release_bundle, execution, commit, get_cli_config_overrides(args)
     )
+    tag = data["source"]["tag"]
+    if project is not None:
+        try:
+            tag_commit = git(
+                project,
+                "rev-parse",
+                "--verify",
+                f"refs/tags/{tag}^{{commit}}",
+                allow_lazy_fetch=False,
+            )
+        except subprocess.CalledProcessError as error:
+            raise ValueError(f"unable to resolve local release tag {tag} to a commit") from error
+        if tag_commit != commit:
+            raise ValueError(f"local release tag {tag} no longer points to {commit}")
     index.absent(config.repository, config.distribution_name, config.version)
     if not execution.local:
-        github.check_tag(data["source"]["tag"], data["source"]["commit"])
+        github.check_tag(tag, commit)
         if config.github_release_requested:
-            github.release_absent(data["source"]["tag"])
+            github.release_absent(tag)
     return {
         "version": config.version,
         "distribution_name": config.distribution_name,
-        "tag": data["source"]["tag"],
+        "tag": tag,
         "github_release_requested": config.github_release_requested,
     }
 

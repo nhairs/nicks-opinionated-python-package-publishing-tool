@@ -2,6 +2,7 @@
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import subprocess
 from typing import TypedDict
@@ -38,8 +39,9 @@ class Context:
     run_attempt: str | None = None
 
 
-def git(root: Path, *args: str) -> str:
+def git(root: Path, *args: str, allow_lazy_fetch: bool = True) -> str:
     """Run a read-only Git query."""
+    env = None if allow_lazy_fetch else {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
     return subprocess.check_output(
         ["git", *args],
         cwd=root,
@@ -47,6 +49,7 @@ def git(root: Path, *args: str) -> str:
         errors="surrogateescape",
         stderr=subprocess.PIPE,
         timeout=60,
+        env=env,
     ).strip()
 
 

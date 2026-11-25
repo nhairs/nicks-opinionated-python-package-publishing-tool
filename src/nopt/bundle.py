@@ -18,6 +18,7 @@ from typing import TypedDict, cast
 from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
 
 from .config import Config, load
+from .git_metadata import verify_git_metadata
 from .source import Context, ContextData, SourceIdentity
 from .project import rename_distribution
 
@@ -148,12 +149,13 @@ def build_release_bundle(
             if requires_testpypi_rename:
                 project_file.write_bytes(original_pyproject_bytes)
         ### Validate artifacts and bind them to the original project configuration.
-        hashes = {
-            "dist/" + name: digest
-            for name, digest in validate_artifacts(
-                distributions, config.distribution_name, config.version
-            ).items()
-        }
+        artifact_hashes = validate_artifacts(
+            distributions, config.distribution_name, config.version
+        )
+        verify_git_metadata(
+            distributions, artifact_hashes, original_pyproject_bytes, source["commit"]
+        )
+        hashes = {"dist/" + name: digest for name, digest in artifact_hashes.items()}
         # Preserve original configuration, not the temporary TestPyPI build name.
         # Publishing derives the same effective name without rebuilding distributions.
         (release_bundle / "pyproject.toml").write_bytes(original_pyproject_bytes)

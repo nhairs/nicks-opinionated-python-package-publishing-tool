@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import tarfile
+from unittest.mock import patch
 import zipfile
 
 import pytest
@@ -104,6 +105,25 @@ def test_checks_configured_packages(
 ) -> None:
     pyproject = _TOML + b'packages = ["second"]\n'
     verify(pyproject, _WHEEL, _RESOURCE, None)
+
+
+def test_reads_only_git_metadata_members(
+    verify: Callable[[bytes, str, str, bytes | None], None],
+) -> None:
+    pyproject = _TOML + b'packages = ["example"]\n'
+    with (
+        patch.object(
+            zipfile.ZipFile, "read", autospec=True, side_effect=zipfile.ZipFile.read
+        ) as read,
+        patch.object(
+            tarfile.TarFile, "extractfile", autospec=True, side_effect=tarfile.TarFile.extractfile
+        ) as extractfile,
+    ):
+        verify(pyproject, _WHEEL, "standalone.py", b"# unrelated content")
+    assert [call.args[1].filename for call in read.call_args_list] == [_RESOURCE]
+    assert [call.args[1].name for call in extractfile.call_args_list] == [
+        f"fixture-1.0/src/{_RESOURCE}"
+    ]
 
 
 @pytest.mark.parametrize(

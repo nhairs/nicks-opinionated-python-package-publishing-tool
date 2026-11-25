@@ -29,7 +29,6 @@ where = ["src"]
 nopt = ["workflow.yml"]
 
 [tool.setuptools-git-metadata]
-packages = ["nopt"]
 
 [tool.black]
 line-length = 100

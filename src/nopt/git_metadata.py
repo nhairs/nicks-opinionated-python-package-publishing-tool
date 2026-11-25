@@ -17,15 +17,8 @@ _RESOURCE = "_git_metadata.json"
 _MAX_METADATA_BYTES = 64 * 1024
 
 
-def _configured_packages(pyproject: bytes) -> set[str] | None:
+def _configured_packages(settings: dict[str, object]) -> set[str] | None:
     """Return explicit package directories, or None for top-level discovery."""
-    config = tomllib.loads(pyproject.decode("utf-8"))
-    settings = config.get("tool", {}).get(_PLUGIN)
-    if not isinstance(settings, dict) or not any(
-        requirement.marker is None and canonicalize_name(requirement.name) == _PLUGIN
-        for requirement in map(Requirement, config.get("build-system", {}).get("requires", []))
-    ):
-        return set()
     if "packages" not in settings:
         return None
     packages = settings["packages"]
@@ -85,6 +78,7 @@ def _verify_commit(artifact: Path, name: str, content: bytes, commit: str) -> No
 
 
 def _verify_wheel(path: Path, packages: set[str] | None, commit: str) -> set[str]:
+    """List ZIP entries and decompress the selected JSON members into memory."""
     with zipfile.ZipFile(path) as wheel:
         resources = _resources(path, wheel.namelist(), "", packages)
         for name in resources.values():
@@ -99,6 +93,7 @@ def _verify_wheel(path: Path, packages: set[str] | None, commit: str) -> set[str
 
 
 def _verify_sdist(path: Path, packages: set[str] | None, commit: str) -> set[str]:
+    """Scan tar headers and read the selected JSON members without writing files."""
     with tarfile.open(path) as sdist:
         names = sdist.getnames()
         # The distribution identity check has already verified the single top-level PKG-INFO.
@@ -122,9 +117,14 @@ def verify_git_metadata(
     directory: Path, artifact_names: Iterable[str], pyproject: bytes, commit: str
 ) -> None:
     """Verify the already validated wheel and sdist for opted-in projects."""
-    packages = _configured_packages(pyproject)
-    if packages is not None and not packages:
+    config = tomllib.loads(pyproject.decode("utf-8"))
+    settings = config.get("tool", {}).get(_PLUGIN)
+    if not isinstance(settings, dict) or not any(
+        requirement.marker is None and canonicalize_name(requirement.name) == _PLUGIN
+        for requirement in map(Requirement, config.get("build-system", {}).get("requires", []))
+    ):
         return
+    packages = _configured_packages(settings)
     artifacts = {Path(name).suffix: directory / name for name in artifact_names}
     wheel, sdist = artifacts[".whl"], artifacts[".gz"]
     if _verify_wheel(wheel, packages, commit) != _verify_sdist(sdist, packages, commit):
